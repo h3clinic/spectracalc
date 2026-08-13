@@ -123,7 +123,15 @@ def _ocr_numbers(gray, x0, y0, x1, y1, psms=(6, 11), scale=3):
 
 
 def _robust_linfit(px, vals):
-    """Theil-Sen (median-slope) fit, tolerant of OCR misreads. -> (a,b,rmse,n)."""
+    """Theil-Sen (median-slope) fit, tolerant of OCR misreads. -> (a,b,rmse,n).
+
+    Two hard-won details: scipy anchors the intercept on median(y) -
+    slope*median(x), which a single misread tick sitting at the median
+    position can corrupt — so the intercept is re-centred on the residual
+    MEDIAN.  And the outlier trim must test residuals around that median,
+    not around zero, or an offset line trims the GOOD ticks and keeps the
+    misread one.
+    """
     from scipy.stats import theilslopes
     px = np.asarray(px, float); vals = np.asarray(vals, float)
     if len(px) < 3:
@@ -133,8 +141,11 @@ def _robust_linfit(px, vals):
         return a, b, 0.0, 2
     a, b, _, _ = theilslopes(vals, px)
     resid = vals - (a * px + b)
+    med = float(np.median(resid))
+    b += med                     # re-centre on the consensus of ticks
+    resid = resid - med
     mad = np.median(np.abs(resid - np.median(resid)))
-    tol = max(3.0 * 1.4826 * mad, 0.01 * (abs(vals).max() + 1))
+    tol = max(3.0 * 1.4826 * mad, 0.005 * (abs(vals).max() + 1))
     keep = np.abs(resid) <= tol
     if keep.sum() >= 3:
         a, b = np.polyfit(px[keep], vals[keep], 1)
@@ -193,7 +204,53 @@ def calibrate_x(gray, frame):
         lo, hi = hi, lo
     if lo < 5000 or hi > 65000 or hi - lo < 5000:
         return None
-    return dict(a=a, b=b, rmse=rmse, n=n, lo=a * xl + b, hi=a * xr + b)
+    # quality gate: a healthy tick fit lands within tens of cm-1; hundreds
+    # means misread ticks won the fit and every exported wavelength is wrong.
+    # When the bottom axis is unreadable, fall back to the independent top
+    # wavelength axis rather than exporting corrupt wavelengths.
+    if rmse > max(150.0, 0.008 * (hi - lo)):
+        top = _calibrate_x_from_top(gray, frame)
+        if top is not None and top["n"] >= 4:
+            ta, tb = top["a"], top["b"]
+            tlo, thi = sorted([ta * xl + tb, ta * xr + tb])
+            return dict(a=ta, b=tb, rmse=top["rmse"], n=top["n"],
+                        lo=ta * xl + tb, hi=ta * xr + tb, source="top_axis")
+        return None
+    result = dict(a=a, b=b, rmse=rmse, n=n, lo=a * xl + b, hi=a * xr + b)
+    # cross-check against the TOP wavelength axis (Å): an independent OCR of
+    # a different set of printed numbers must agree with the bottom fit
+    top = _calibrate_x_from_top(gray, frame)
+    if top is not None:
+        span = hi - lo
+        d1 = abs((a * xl + b) - (top["a"] * xl + top["b"]))
+        d2 = abs((a * xr + b) - (top["a"] * xr + top["b"]))
+        result["top_axis_disagreement"] = round(max(d1, d2) / span, 4)
+    return result
+
+
+def _calibrate_x_from_top(gray, frame):
+    """Independent pixel->wavenumber fit from the TOP wavelength axis (Å).
+
+    Wavelength tick values converted by wn = 1e8 / Å are collinear in pixel
+    space, so the same robust fit applies.  Used only to cross-check the
+    bottom-axis calibration.
+    """
+    xl, xr, yt = frame["x_left"], frame["x_right"], frame["y_top"]
+    h = gray.shape[0]
+    y0 = max(0, yt - int(0.045 * h))
+    toks = _ocr_numbers(gray, xl - 50, y0, xr + 50, yt - 4)
+    pts = sorted((cx, 1e8 / float(t)) for (t, cx, cy, *_) in toks
+                 if len(t) == 4 and "." not in t and 2000 <= float(t) <= 7000)
+    if len(pts) < 3:
+        return None
+    fit = _robust_linfit([p[0] for p in pts], [p[1] for p in pts])
+    if fit is None:
+        return None
+    a, b, rmse, n = fit
+    lo, hi = sorted([a * xl + b, a * xr + b])
+    if lo < 5000 or hi > 65000 or hi - lo < 5000 or rmse > 300:
+        return None
+    return dict(a=a, b=b, rmse=rmse, n=n)
 
 
 def calibrate_right_y(gray, frame):

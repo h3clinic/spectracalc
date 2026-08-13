@@ -239,13 +239,26 @@ def _curve_physical(c, xcal, frame_orig, scale):
         return None, None
     wl = 1e7 / wn[ok]
     inten = inten[ok]
-    # Berlman normalization: a curve whose trace reaches the ink apex is
-    # normalized to unit peak (same snap rule as the batch pipeline)
+    # Berlman normalization on the RAW points first — a needle apex must be
+    # judged before bin-averaging blurs it with its own flank
     mx = float(inten.max()) if len(inten) else 0.0
     if mx >= 0.96:
         inten = inten / mx
-    o = np.argsort(wl)
-    return wl[o], inten[o]
+    # 0.1 nm dedup-averaging: traced dots are per pixel COLUMN, so a
+    # near-vertical needle flank piles many intensities onto one wavelength
+    # — exported curves must be single-valued (same rule as the batch
+    # pipeline / spectra_all.json).  The bin holding the global peak keeps
+    # the apex value instead of the mean, so needles keep their height.
+    order = np.argsort(wl)
+    wl, inten = wl[order], inten[order]
+    bins = np.round(wl, 1)
+    uw, idx = np.unique(bins, return_inverse=True)
+    sums = np.bincount(idx, weights=inten)
+    cnts = np.bincount(idx)
+    vals = sums / np.maximum(cnts, 1)
+    peak_bin = idx[int(np.argmax(inten))]
+    vals[peak_bin] = float(inten.max())
+    return uw, vals
 
 
 def _excel_chart_png(path, wl, inten, title, color):
