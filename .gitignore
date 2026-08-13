@@ -7,3 +7,5 @@ build/
 .env
 venv/
 app/outputs/
+app/cache/
+app/spectra_all.json

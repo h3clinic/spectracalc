@@ -96,6 +96,37 @@ input#fileInput { display:none; }
 }
 .toast.show { opacity:1; pointer-events:auto; }
 
+/* ── Slide browser ── */
+.slide-nav {
+  position:absolute; top:50%; transform:translateY(-50%); z-index:8;
+  width:52px; height:96px; border:none; border-radius:12px; cursor:pointer;
+  background:rgba(26,29,36,.72); color:#e4e6ea; font-size:26px;
+  display:none; align-items:center; justify-content:center; transition:background .15s;
+}
+.slide-nav:hover { background:rgba(74,143,231,.85); }
+.slide-nav.prev { left:12px; }
+.slide-nav.next { right:12px; }
+body.browsing .slide-nav { display:flex; }
+.slide-cta {
+  position:absolute; bottom:18px; left:50%; transform:translateX(-50%); z-index:8;
+  display:none; gap:10px;
+}
+body.browsing .slide-cta { display:flex; }
+.slide-cta button {
+  height:40px; padding:0 20px; border-radius:20px; border:none; cursor:pointer;
+  font-size:14px; font-weight:600; color:#fff; background:var(--accent);
+  box-shadow:0 4px 14px rgba(0,0,0,.45);
+}
+.slide-cta button.ghost { background:rgba(26,29,36,.8); font-weight:400; }
+.slide-title {
+  position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:8;
+  display:none; background:rgba(26,29,36,.8); border-radius:8px; padding:7px 16px;
+  font-size:13px; color:var(--text);
+}
+body.browsing .slide-title { display:block; }
+.slide-title b { color:var(--accent); }
+#libSearch { height:34px; padding:0 10px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; width:150px; }
+
 /* ── Curve chips ── */
 .chip {
   height:34px; padding:0 12px; border-radius:17px; border:1.5px solid var(--border);
@@ -140,6 +171,10 @@ input#fileInput { display:none; }
   <h1><span>Berlman</span> Digitizer</h1>
   <label class="btn btn-primary" for="fileInput">Upload Image</label>
   <input type="file" id="fileInput" accept="image/*">
+  <button class="btn" id="btnBrowse" onclick="enterBrowse()" style="display:none">🗂 Library</button>
+  <input id="libSearch" list="libList" placeholder="Search library…" style="display:none">
+  <datalist id="libList"></datalist>
+  <button class="btn" onclick="toggleFullscreen()" title="Fullscreen">⛶</button>
   <div class="sep"></div>
   <button class="btn mode-btn" id="btnAdd" onclick="setMode('add')">Add Same</button>
   <button class="btn mode-btn" id="btnErase" onclick="setMode('erase')">Erase</button>
@@ -160,6 +195,13 @@ input#fileInput { display:none; }
 <div class="main">
   <div class="canvas-wrap" id="canvasWrap">
     <canvas id="editor"></canvas>
+    <button class="slide-nav prev" onclick="slide(-1)" title="Previous (←)">◀</button>
+    <button class="slide-nav next" onclick="slide(1)" title="Next (→)">▶</button>
+    <div class="slide-title" id="slideTitle"></div>
+    <div class="slide-cta">
+      <button onclick="editCurrentSlide()">✎ Edit this spectrum (fullscreen)</button>
+      <button class="ghost" onclick="toggleFullscreen()">⛶ Fullscreen</button>
+    </div>
     <div class="dropzone" id="dropzone">
       <div class="drop-card" id="dropCard">
         <h2>Drop a spectrum image here</h2>
@@ -299,6 +341,7 @@ async function handleFile(file) {
 }
 
 function loadResult(data) {
+  exitBrowse();
   appState = data;
   curves = data.curves
     .filter(c => ['emission', 'absorption', 'emission2', 'extra'].includes(c.role))
@@ -465,7 +508,11 @@ canvas.addEventListener('mouseup', () => {
 
 // ── Keyboard shortcuts ──
 document.addEventListener('keydown', e => {
-  if (e.key === '1') setMode('add');
+  if (e.target.tagName === 'INPUT') return;
+  if (browseMode && e.key === 'ArrowLeft') { slide(-1); e.preventDefault(); }
+  else if (browseMode && e.key === 'ArrowRight') { slide(1); e.preventDefault(); }
+  else if (browseMode && e.key === 'Enter') { editCurrentSlide(); e.preventDefault(); }
+  else if (e.key === '1') setMode('add');
   else if (e.key === '2') setMode('erase');
   else if (e.key === '3') setMode('pan');
   else if (e.key === 'e' || e.key === 'E') setRole('emission');
@@ -474,6 +521,8 @@ document.addEventListener('keydown', e => {
   else if (e.key === '+' || e.key === '=') zoomIn();
   else if (e.key === '-') zoomOut();
   else if (e.key === '0') zoomFit();
+  else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+  else if (e.key === 'Escape' && !document.fullscreenElement && library.length && !browseMode) enterBrowse();
 });
 
 // ── Undo ──
@@ -606,6 +655,95 @@ async function exportCSV() {
   showToast('CSV exported');
 }
 
+// ── Slide browser (library) ──
+let library = [];           // [{gid, name}]
+let hasOverlays = false;
+let browseMode = false;
+let slideIdx = 0;
+
+async function loadLibrary() {
+  try {
+    const r = await fetch('/api/library');
+    const d = await r.json();
+    library = d.pages || [];
+    hasOverlays = !!d.overlays;
+    if (library.length) {
+      document.getElementById('btnBrowse').style.display = '';
+      const search = document.getElementById('libSearch');
+      search.style.display = '';
+      const dl = document.getElementById('libList');
+      dl.innerHTML = library.map(p => `<option value="${p.gid} — ${p.name}">`).join('');
+      search.addEventListener('change', () => {
+        const gid = search.value.split(' — ')[0].trim();
+        const i = library.findIndex(p => p.gid === gid);
+        if (i >= 0) { slideIdx = i; enterBrowse(); }
+        search.blur();
+      });
+      enterBrowse();   // start in slide mode when the library is available
+    }
+  } catch (e) { /* standalone install without the Berlman set */ }
+}
+
+function enterBrowse() {
+  if (!library.length) return;
+  browseMode = true;
+  document.body.classList.add('browsing');
+  document.getElementById('dropzone').classList.add('hidden');
+  document.getElementById('results').classList.remove('show');
+  curves = []; undoStack = [];
+  showSlide(slideIdx);
+  setMode('pan');
+}
+
+function exitBrowse() {
+  browseMode = false;
+  document.body.classList.remove('browsing');
+}
+
+function showSlide(i) {
+  slideIdx = ((i % library.length) + library.length) % library.length;
+  const p = library[slideIdx];
+  document.getElementById('slideTitle').innerHTML =
+    `<b>${p.gid}</b> — ${p.name} &nbsp;·&nbsp; ${slideIdx + 1} / ${library.length}`;
+  document.getElementById('status').textContent = '';
+  img = new Image();
+  img.onload = () => { imgW = img.width; imgH = img.height; zoomFit(); };
+  img.src = hasOverlays ? `/overlays/${p.gid}.png` : `/static/placeholder.png`;
+}
+
+function slide(d) { if (browseMode) showSlide(slideIdx + d); }
+
+async function editCurrentSlide() {
+  const p = library[slideIdx];
+  if (!p) return;
+  document.getElementById('spinner').classList.remove('hidden');
+  document.querySelector('.spinner-text').textContent =
+    `Digitizing ${p.gid} — first visit takes ~30-60 s, revisits are instant…`;
+  toggleFullscreen(true);
+  try {
+    const r = await fetch('/api/digitize_page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gid: p.gid }),
+    });
+    const data = await r.json();
+    if (data.error) { alert(data.error); return; }
+    exitBrowse();
+    loadResult(data);
+  } catch (e) {
+    alert('Digitization failed: ' + e.message);
+  } finally {
+    document.getElementById('spinner').classList.add('hidden');
+  }
+}
+
+function toggleFullscreen(on) {
+  const fs = document.fullscreenElement;
+  if (on === true && fs) return;
+  if (fs && on !== true) { document.exitFullscreen(); return; }
+  document.documentElement.requestFullscreen?.().catch(() => {});
+}
+
 // ── Toast ──
 function showToast(msg) {
   const t = document.getElementById('toast');
@@ -617,6 +755,6 @@ function showToast(msg) {
 
 // ── Init ──
 setMode('pan');
-setRole('emission');
 resizeCanvas();
+loadLibrary();
 </script>

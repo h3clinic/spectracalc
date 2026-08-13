@@ -16,11 +16,27 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import berlman as B
 
 OUTPUTS = os.path.join(os.path.dirname(__file__), "outputs")
+CACHE = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(OUTPUTS, exist_ok=True)
+os.makedirs(CACHE, exist_ok=True)
+
+PAGES_DIR = os.path.join(os.path.dirname(__file__), "..", "berlman_run600", "pages")
+GALLERY_DIR = next((d for d in (
+    os.path.join(os.path.dirname(__file__), "..", "gallery"),     # local layout
+    os.path.join(os.path.dirname(__file__), "..", "overlays"),    # repo layout
+) if os.path.isdir(d)), "")
+_HERE = os.path.dirname(__file__)
+SPECTRA_JSON_CANDIDATES = [
+    os.path.join(_HERE, "spectra_all.json"),              # bundled beside app
+    os.path.join(_HERE, "..", "data", "spectra_all.json"),  # repo layout
+    os.path.expanduser("~/Downloads/Berlman_600dpi_spectra/spectra_all.json"),
+]
 
 app = FastAPI(title="Berlman Spectra Digitizer")
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 app.mount("/outputs", StaticFiles(directory=OUTPUTS), name="outputs")
+if os.path.isdir(GALLERY_DIR):
+    app.mount("/overlays", StaticFiles(directory=GALLERY_DIR), name="overlays")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -29,23 +45,10 @@ async def index():
         return f.read()
 
 
-@app.post("/api/digitize")
-async def digitize(file: UploadFile = File(...)):
-    raw = await file.read()
-    arr = np.frombuffer(raw, np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
-        return JSONResponse({"error": "Could not decode image"}, status_code=400)
-
+def _digitize_path(path, img):
+    """Run the pipeline on an image file and build the editor payload."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    tmp.write(raw)
-    tmp.close()
-    try:
-        r = B.digitize(tmp.name)
-    finally:
-        os.unlink(tmp.name)
+    r = B.digitize(path)
 
     fr = r["frame"]
     xcal = r.get("xcal")
@@ -107,6 +110,75 @@ async def digitize(file: UploadFile = File(...)):
             "lo": xcal["lo"], "hi": xcal["hi"],
         } if xcal else None,
     }
+
+
+@app.post("/api/digitize")
+async def digitize(file: UploadFile = File(...)):
+    raw = await file.read()
+    arr = np.frombuffer(raw, np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return JSONResponse({"error": "Could not decode image"}, status_code=400)
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp.write(raw)
+    tmp.close()
+    try:
+        return _digitize_path(tmp.name, img)
+    finally:
+        os.unlink(tmp.name)
+
+
+@app.get("/api/library")
+async def library():
+    """The bundled Berlman set for slide browsing: [{gid, name}]."""
+    entries = []
+    names = {}
+    order = []
+    for cand in SPECTRA_JSON_CANDIDATES:
+        try:
+            with open(cand) as f:
+                raw = json.load(f)
+            names = {g: s.get("name", g) for g, s in raw["spectra"].items()}
+            order = raw["order"]
+            break
+        except Exception:
+            continue
+    if not order and os.path.isdir(PAGES_DIR):
+        order = sorted(f[:-4] for f in os.listdir(PAGES_DIR)
+                       if f.startswith("graph-") and f.endswith(".png"))
+    for gid in order:
+        if os.path.exists(os.path.join(PAGES_DIR, gid + ".png")):
+            entries.append({"gid": gid, "name": names.get(gid, gid)})
+    return {"pages": entries,
+            "overlays": os.path.isdir(GALLERY_DIR)}
+
+
+@app.post("/api/digitize_page")
+async def digitize_page(data: dict):
+    """Digitize a bundled library page, with a disk cache so revisits are
+    instant (first visit runs the full pipeline, ~30-60 s)."""
+    gid = re.sub(r"[^A-Za-z0-9\-]", "", data.get("gid") or "")
+    path = os.path.join(PAGES_DIR, gid + ".png")
+    if not gid or not os.path.exists(path):
+        return JSONResponse({"error": f"Unknown page {gid!r}"}, status_code=404)
+
+    cache_path = os.path.join(CACHE, gid + ".json")
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
+            return json.load(f)
+
+    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    payload = _digitize_path(path, img)
+    payload["gid"] = gid
+
+    # LRU-ish cache: keep the 40 most recent pages
+    with open(cache_path, "w") as f:
+        json.dump(payload, f)
+    cached = sorted((os.path.join(CACHE, n) for n in os.listdir(CACHE)
+                     if n.endswith(".json")), key=os.path.getmtime, reverse=True)
+    for old in cached[40:]:
+        os.unlink(old)
+    return payload
 
 
 @app.post("/api/export")
@@ -237,9 +309,38 @@ def _curve_xlsx(path, wl, inten, title, hexcolor):
     wb.save(path)
 
 
+def _smooth_for_display(wl, inten, n_out=700):
+    """Continuous smoothed line for the PhotochemCAD chart.
+
+    Averages duplicate wavelengths, resamples onto a uniform grid, and
+    applies a light Savitzky-Golay filter — stroke-width jitter disappears
+    while band shapes and needle peaks survive.
+    """
+    from scipy.signal import savgol_filter
+    wl = np.asarray(wl, float)
+    inten = np.asarray(inten, float)
+    # average duplicates (many pixel columns map to the same 0.1 nm)
+    uw, idx = np.unique(np.round(wl, 1), return_inverse=True)
+    sums = np.bincount(idx, weights=inten)
+    cnts = np.bincount(idx)
+    uv = sums / np.maximum(cnts, 1)
+    if len(uw) < 8:
+        return uw, uv
+    grid = np.linspace(uw[0], uw[-1], min(n_out, max(80, len(uw))))
+    vals = np.interp(grid, uw, uv)
+    win = max(5, min(13, (len(grid) // 40) * 2 + 1))
+    try:
+        vals = savgol_filter(vals, win, 3)
+    except Exception:
+        pass
+    vals = np.clip(vals, 0, None)
+    return grid, vals
+
+
 def _pccad_html(path, wl, inten, meta, csv_name):
     """Standalone PhotochemCAD-style page: metadata table + hoverable chart."""
-    pts = [[round(float(w), 2), round(float(v), 5)] for w, v in zip(wl, inten)]
+    swl, sv = _smooth_for_display(wl, inten)
+    pts = [[round(float(w), 2), round(float(v), 5)] for w, v in zip(swl, sv)]
     peak_i = int(np.argmax(inten))
     rows = [
         ("Name", meta["molecule"]),
