@@ -680,6 +680,12 @@ async function loadLibrary() {
         search.blur();
       });
       enterBrowse();   // start in slide mode when the library is available
+      // deep link: /?gid=graph-124 jumps straight to that page's editor
+      const want = new URLSearchParams(location.search).get('gid');
+      if (want) {
+        const i = library.findIndex(p => p.gid === want);
+        if (i >= 0) { slideIdx = i; showSlide(i); editCurrentSlide(); }
+      }
     }
   } catch (e) { /* standalone install without the Berlman set */ }
 }
