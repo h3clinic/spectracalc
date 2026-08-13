@@ -181,6 +181,130 @@ async def digitize_page(data: dict):
     return payload
 
 
+@app.post("/api/save_page")
+async def save_page(data: dict):
+    """Write edited curves back into the LIBRARY: canonical spectra_all.json
+    (all copies), the page's CSVs, the round-trip overlay, and the viewer's
+    inlined data — the full fix-and-remake loop in one click."""
+    gid = re.sub(r"[^A-Za-z0-9\-]", "", data.get("gid") or "")
+    xcal = data.get("xcal")
+    frame_orig = data.get("frame_orig", {})
+    scale = data.get("scale", 1.0)
+    molecule = data.get("molecule") or gid
+    if not gid or not xcal:
+        return JSONResponse({"error": "need gid + calibration"}, status_code=400)
+
+    role_key = {"emission": "em", "absorption": "ab", "emission2": "em2"}
+    updates = {}
+    for c in data.get("curves", []):
+        key = role_key.get(c.get("role"))
+        if key is None or len(c.get("px", [])) < 5:
+            continue
+        wl, inten = _curve_physical(c, xcal, frame_orig, scale)
+        if wl is None:
+            continue
+        updates[key] = {"wl": [round(float(w), 1) for w in wl],
+                        "inten": [round(float(v), 6) for v in inten]}
+    if not updates:
+        return JSONResponse({"error": "no valid curves"}, status_code=400)
+
+    # writable canonical copies first — the server process cannot reach
+    # ~/Downloads on macOS (TCC), so that one is best-effort only
+    repo_data = os.path.expanduser("~/onepager/SpectraWolf/data/spectra_all.json")
+    canon = SPECTRA_JSON_CANDIDATES[0]           # app bundle (always writable)
+    touched = []
+    for path in [canon, repo_data] + SPECTRA_JSON_CANDIDATES[1:]:
+        try:
+            with open(path) as f:
+                raw = json.load(f)
+            entry = raw["spectra"].setdefault(gid, {"name": molecule, "graph": gid})
+            for key, cur in updates.items():
+                entry[key] = cur
+                peak_wl = cur["wl"][int(np.argmax(cur["inten"]))]
+                if key == "em":
+                    entry["lam_em"] = str(int(round(peak_wl)))
+                elif key == "ab":
+                    entry["lam_abs"] = str(int(round(peak_wl)))
+            entry["hand_edited"] = True
+            with open(path, "w") as f:
+                json.dump(raw, f)
+            touched.append(path)
+        except Exception:
+            continue
+
+    # per-page CSVs
+    csv_dir_map = {"em": ("emission", "emission"), "ab": ("absorption", "absorption")}
+    base = os.path.expanduser("~/Downloads/Berlman_600dpi_spectra")
+    for key, (kind, col) in csv_dir_map.items():
+        if key not in updates:
+            continue
+        d = os.path.join(base, kind, "csv")
+        if not os.path.isdir(d):
+            continue
+        import glob as _glob
+        old_files = _glob.glob(os.path.join(d, f"*__{gid}.csv"))
+        path = old_files[0] if old_files else os.path.join(
+            d, f"{_safe(molecule)}__{gid}.csv")
+        with open(path, "w", newline="") as fp:
+            w = csv.writer(fp)
+            w.writerow(["wavelength_nm", col])
+            for wv, iv in zip(updates[key]["wl"], updates[key]["inten"]):
+                w.writerow([f"{wv:.1f}", f"{iv:.6f}"])
+
+    # round-trip overlay for this page
+    overlay_ok = False
+    try:
+        page_png = os.path.join(PAGES_DIR, gid + ".png")
+        vis = cv2.cvtColor(cv2.imread(page_png, cv2.IMREAD_GRAYSCALE),
+                           cv2.COLOR_GRAY2BGR)
+        yt, yb = frame_orig["y_top"], frame_orig["y_bottom"]
+        xl, xr = frame_orig["x_left"], frame_orig["x_right"]
+        colors = {"em": (60, 60, 235), "ab": (40, 160, 40), "em2": (0, 150, 255)}
+        for key, cur in updates.items():
+            wl = np.asarray(cur["wl"], float)
+            v = np.asarray(cur["inten"], float)
+            wn = 1e7 / wl
+            pxs = (wn - xcal["b"]) / xcal["a"]
+            pys = yb - v * (yb - yt)
+            for x, y in zip(pxs[::2], pys[::2]):
+                if xl - 20 <= x <= xr + 20:
+                    cv2.circle(vis, (int(round(x)), int(round(y))), 6,
+                               colors[key], -1, lineType=cv2.LINE_AA)
+        repo_ovl = os.path.expanduser("~/onepager/SpectraWolf/overlays")
+        for dst in (os.path.join(GALLERY_DIR, gid + ".png") if GALLERY_DIR else None,
+                    os.path.join(repo_ovl, gid + ".png") if os.path.isdir(repo_ovl) else None,
+                    os.path.join(base, "roundtrip_validation", gid + ".png")):
+            if dst:
+                cv2.imwrite(dst, vis)
+        overlay_ok = True
+    except Exception:
+        pass
+
+    # viewer's inlined data
+    viewer_ok = False
+    vp = os.path.expanduser("~/onepager/berlman_photochemcad.html")
+    try:
+        with open(canon) as f:
+            raw = json.load(f)
+        with open(vp, encoding="utf-8") as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines):
+            if line.startswith("const SPECTRA = "):
+                lines[i] = "const SPECTRA = " + json.dumps(
+                    raw["spectra"], separators=(",", ":")) + ";\n"
+            elif line.startswith("const ORDER = "):
+                lines[i] = "const ORDER = " + json.dumps(
+                    raw["order"], separators=(",", ":")) + ";\n"
+        with open(vp, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        viewer_ok = True
+    except Exception:
+        pass
+
+    return {"saved": sorted(updates.keys()), "json_copies": len(touched),
+            "overlay": overlay_ok, "viewer": viewer_ok}
+
+
 @app.post("/api/export")
 async def export(data: dict):
     """Export edited curves as CSV."""
@@ -239,11 +363,16 @@ def _curve_physical(c, xcal, frame_orig, scale):
         return None, None
     wl = 1e7 / wn[ok]
     inten = inten[ok]
-    # Berlman normalization on the RAW points first — a needle apex must be
-    # judged before bin-averaging blurs it with its own flank
+    # Berlman normalization on the RAW points first — apex-LOCAL: stretch
+    # only the top 2% band to 1.0 so the rest of the curve stays exactly on
+    # the printed line (a global rescale floats every point above the ink)
     mx = float(inten.max()) if len(inten) else 0.0
-    if mx >= 0.96:
-        inten = inten / mx
+    if 0.96 <= mx < 1.0:
+        band_lo = mx - 0.02
+        sel = inten > band_lo
+        inten = np.array(inten, float)
+        inten[sel] = band_lo + (inten[sel] - band_lo) * (
+            (1.0 - band_lo) / (mx - band_lo))
     # 0.1 nm dedup-averaging: traced dots are per pixel COLUMN, so a
     # near-vertical needle flank piles many intensities onto one wavelength
     # — exported curves must be single-valued (same rule as the batch

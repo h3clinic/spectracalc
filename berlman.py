@@ -1240,6 +1240,67 @@ def _trace_dotted_tail(bw_raw, cmask, fr, curves):
             cur["cx"] = float(cur["px"].mean())
 
 
+def _role_hygiene(fr, curves):
+    """Remove cross-contaminated points where red and green mix.
+
+    In crossing zones the walks and tail trackers occasionally pick up a few
+    of the OTHER curve's pixels.  Bin-averaging then pulls the exported
+    curve off the ink near every crossing.  Test: a point that sits far from
+    its own curve's local median but close to the other curve's local track
+    belongs to the other curve — drop it (the other curve already has its
+    own trace there).
+    """
+    em = next((c for c in curves if c.get("role") == "emission"), None)
+    ab = next((c for c in curves if c.get("role") == "absorption"), None)
+    if em is None or ab is None:
+        return
+
+    def local_median_model(c, win):
+        px = np.asarray(c["px"], float)
+        py = np.asarray(c["py"], float)
+        o = np.argsort(px)
+        px, py = px[o], py[o]
+
+        def at(x):
+            i = np.searchsorted(px, x)
+            lo = max(0, i - win)
+            hi = min(len(px), i + win)
+            if hi <= lo:
+                return None
+            return float(np.median(py[lo:hi]))
+        return px, py, at
+
+    win = 12
+    far = _s(10)
+    for cur, other in ((em, ab), (ab, em)):
+        cpx = np.asarray(cur["px"], float)
+        cpy = np.asarray(cur["py"], float)
+        opx, _, other_at = local_median_model(other, win)
+        _, _, own_at = local_median_model(cur, win)
+        if len(opx) < 20 or len(cpx) < 20:
+            continue
+        keep = np.ones(len(cpx), bool)
+        o_lo, o_hi = opx.min(), opx.max()
+        apex_y = float(cpy.min())      # smallest py = the curve's peak
+        for i, (x, y) in enumerate(zip(cpx, cpy)):
+            if not (o_lo <= x <= o_hi):
+                continue  # outside the other curve's span — cannot contaminate
+            if y <= apex_y + _s(14):
+                continue  # never cull a curve's own apex zone
+            own = own_at(x)
+            oth = other_at(x)
+            if own is None or oth is None:
+                continue
+            d_own = abs(y - own)
+            d_oth = abs(y - oth)
+            if d_own > far and d_oth < 0.5 * d_own:
+                keep[i] = False
+        if not keep.all():
+            cur["px"] = cpx[keep]
+            cur["py"] = cpy[keep]
+            cur["cx"] = float(cur["px"].mean()) if len(cur["px"]) else 0.0
+
+
 def _label_positions(gray, fr):
     """Full-scale x-positions of EMISSION / ABSORPTION labels inside the plot."""
     import pytesseract
@@ -1683,12 +1744,19 @@ def _physical(curves, fr, xcal, rycal):
             c["wavenumber"] = xcal["a"] * c["px"] + xcal["b"]
         inten = px_to_intensity(c["py"], fr)
         # Berlman normalizes every standard curve to unit peak.  A raw max
-        # just under 1.0 is stroke-width / border-blanking bias — snap it.
-        # Genuinely sub-unity curves (CURVE II variants) stay untouched.
+        # just under 1.0 is border-blanking clip at the APEX only — so the
+        # restoration must be local: stretch just the top 2% band up to 1.0
+        # and leave the rest of the curve exactly on the ink (a global
+        # rescale floats every point ~1.5% above the printed line).
         raw_max = float(inten.max()) if len(inten) else 0.0
         c["raw_max_intensity"] = raw_max
-        if c.get("role") in ("emission", "absorption") and raw_max >= 0.96:
-            inten = inten / raw_max
+        if (c.get("role") in ("emission", "absorption")
+                and 0.96 <= raw_max < 1.0):
+            band_lo = raw_max - 0.02
+            sel = inten > band_lo
+            inten = np.array(inten, float)
+            inten[sel] = band_lo + (inten[sel] - band_lo) * (
+                (1.0 - band_lo) / (raw_max - band_lo))
         c["intensity"] = inten
         if rycal and c["role"] == "absorption":
             c["extinction"] = rycal["a"] * c["py"] + rycal["b"]
@@ -1879,6 +1947,10 @@ def digitize(path):
     # Dotted overlap tails (drawn where the curves cross) need slope
     # projection — the chain walk cannot cross the other curve's stroke.
     _trace_dotted_tail(bw, best_cmask, fr, best)
+
+    # Red and green must never mix: drop cross-contaminated points that
+    # sit on the other curve's ink in crossing zones.
+    _role_hygiene(fr, best)
 
     # Printed EMISSION/ABSORPTION labels are the ground truth for roles —
     # catch pages where geometry fooled the classifier (magnified insets,

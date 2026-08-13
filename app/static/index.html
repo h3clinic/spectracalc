@@ -189,6 +189,7 @@ body.browsing .slide-title { display:block; }
   <button class="btn" onclick="zoomFit()">Fit</button>
   <div class="sep"></div>
   <button class="btn btn-primary" onclick="exportCSV()">Export CSV</button>
+  <button class="btn" id="btnSave" onclick="saveToLibrary()" style="display:none;background:#1e8f4e;border-color:#1e8f4e;color:#fff">💾 Save to Library</button>
   <div class="status" id="status"></div>
 </div>
 
@@ -365,6 +366,7 @@ function loadResult(data) {
     const emi = curves.findIndex(c => c.role === 'emission');
     setActiveCurve(emi >= 0 ? emi : 0);
     document.getElementById('status').textContent = `${data.molecule || 'Spectrum'} — F1 ${data.f1}`;
+    document.getElementById('btnSave').style.display = data.gid ? '' : 'none';
     scheduleGenerate();   // build the initial output set
   };
   img.src = 'data:image/png;base64,' + data.image;
@@ -389,9 +391,12 @@ function draw() {
 
   ctx.drawImage(img, 0, 0);
 
-  // Draw dots
+  // Draw dots — in edit modes, dim every curve except the active one so
+  // crossing regions stay readable
   const dotR = Math.max(2, 3 / zoom);
-  for (const c of curves) {
+  const editing = mode === 'add' || mode === 'erase';
+  curves.forEach((c, ci) => {
+    ctx.globalAlpha = (editing && ci !== activeIdx) ? 0.28 : 1.0;
     ctx.fillStyle = c.color || '#e74c3c';
     ctx.strokeStyle = 'rgba(0,0,0,.35)';
     ctx.lineWidth = 1 / zoom;
@@ -401,7 +406,8 @@ function draw() {
       ctx.fill();
       ctx.stroke();
     }
-  }
+  });
+  ctx.globalAlpha = 1.0;
 
   ctx.restore();
 }
@@ -748,6 +754,35 @@ function toggleFullscreen(on) {
   if (on === true && fs) return;
   if (fs && on !== true) { document.exitFullscreen(); return; }
   document.documentElement.requestFullscreen?.().catch(() => {});
+}
+
+// ── Save edits back into the library (dataset + viewer + overlay) ──
+async function saveToLibrary() {
+  if (!appState.gid || !appState.has_xcal) { showToast('No library page loaded'); return; }
+  document.getElementById('status').textContent = 'Saving to library…';
+  try {
+    const resp = await fetch('/api/save_page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        gid: appState.gid,
+        molecule: appState.molecule,
+        curves: curves.filter(c => c.px.length >= 5).map(c => ({
+          role: c.role, px: c.px, py: c.py,
+        })),
+        xcal: appState.xcal,
+        frame_orig: appState.frame_orig,
+        scale: appState.scale,
+      }),
+    });
+    const d = await resp.json();
+    if (d.error) { alert(d.error); return; }
+    showToast(`Saved ${d.saved.join(' + ')} — dataset, overlay & viewer updated`);
+    document.getElementById('status').textContent =
+      `${appState.molecule} — saved to library (${d.saved.join(', ')})`;
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  }
 }
 
 // ── Toast ──
