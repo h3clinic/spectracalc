@@ -419,7 +419,7 @@ canvas{{width:100%;height:430px;display:block}}
 <script>
 const P = {json.dumps(pts)};
 const cv = document.getElementById('ch'), tip = document.getElementById('tip');
-const C = '#c0392b';
+const C = '{meta['color']}';
 function draw() {{
   const r = cv.getBoundingClientRect();
   cv.width = r.width * devicePixelRatio; cv.height = 430 * devicePixelRatio;
@@ -538,6 +538,7 @@ async def generate(data: dict):
         pccad_path = os.path.join(outdir, base + "_photochemcad.html")
         _pccad_html(pccad_path, wl, inten,
                     {"molecule": molecule, "kind": kind, "gid": gid,
+                     "color": color,
                      "ylabel": "Molar Extinction (norm.)" if c.get("role") == "absorption"
                                else "Photon Intensity (arb.)"},
                     base + ".csv")
