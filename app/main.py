@@ -258,7 +258,19 @@ def _curve_physical(c, xcal, frame_orig, scale):
     vals = sums / np.maximum(cnts, 1)
     peak_bin = idx[int(np.argmax(inten))]
     vals[peak_bin] = float(inten.max())
-    return uw, vals
+    # bridge small print breaks in the source page (<= 5 nm) linearly
+    owl, ov = [], []
+    for i in range(len(uw)):
+        owl.append(float(uw[i])); ov.append(float(vals[i]))
+        if i + 1 < len(uw):
+            gap = uw[i + 1] - uw[i]
+            if 0.15 < gap <= 5.0:
+                n = int(round(gap / 0.1)) - 1
+                for k in range(1, n + 1):
+                    t = k * 0.1 / gap
+                    owl.append(round(float(uw[i]) + k * 0.1, 1))
+                    ov.append(float(vals[i]) + t * float(vals[i + 1] - vals[i]))
+    return np.asarray(owl), np.asarray(ov)
 
 
 def _excel_chart_png(path, wl, inten, title, color):
