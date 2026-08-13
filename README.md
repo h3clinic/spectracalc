@@ -75,10 +75,11 @@ Open `http://localhost:8770` in your browser.
 |-------|-------|
 | graph-289, graph-291 | x-axis tick OCR too garbled to calibrate — no exported data |
 | graph-396 (chrysene) | emission and absorption 0-0 bands coincide at the same wavelength; absorption is not exported rather than exporting a wrong split |
-| graph-235, 328, 342, 427 | absorption peak below 1.0 — part of a complex vibronic structure remains untraced |
+| graph-141, 216, 217, 342, 372 | mirror-image interleave: emission and absorption cross repeatedly and the single-valued trace bleeds across roles — part of the absorption band system is carried in the emission trace (verified visually page by page) |
+| graph-235, 328, 427 | absorption peak below 1.0 — part of a complex vibronic structure remains untraced |
 | a few pages (e.g. graph-142, 290, 355) | the short dotted overlap tail where the curves cross is left untraced |
 
-These pages are the intended use case for the interactive editor: load the page, add/erase dots by hand, export.
+Every one of these 11 hard pages (of 308) is the intended use case for the interactive editor: load the page, add/erase dots by hand, export.
 
 ## Dependencies
 
