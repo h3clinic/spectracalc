@@ -640,6 +640,16 @@ def _classify(curves):
         em_px = np.asarray(em["px"])
         if float(ex_px.mean()) >= ab_peak_x:
             continue
+        # Merging is for FRAGMENTS of one curve split at an x-gap.  Curves
+        # that overlap in x are distinct curves (concentration variants,
+        # excimer/monomer pairs) — concatenating them makes a double-valued
+        # zigzag that wrecks the reconstruction.
+        ov = min(float(ex_px.max()), float(em_px.max())) - \
+             max(float(ex_px.min()), float(em_px.min()))
+        shorter = min(float(ex_px.max()) - float(ex_px.min()),
+                      float(em_px.max()) - float(em_px.min()))
+        if shorter > 0 and ov / shorter > 0.10:
+            continue
         gap = max(0, ex_px.min() - em_px.max(), em_px.min() - ex_px.max())
         if gap <= _s(100):
             em["px"] = np.concatenate([em_px, ex_px])
@@ -932,6 +942,615 @@ def _recover_absorption(cmask, fr, curves):
         em["cx"] = saved_em_cx
 
 
+def _page_has_absorption(gray, rycal):
+    """Decide whether the page contains an absorption panel.
+
+    Standard Berlman pages print the word ABSORPTION on the plot and carry a
+    right-hand molar-extinction axis.  Emission-only comparison pages
+    (CURVE I / CURVE II concentration or solvent studies) have neither.
+    Either signal counts as evidence, so a single OCR miss cannot drop a
+    real absorption curve.
+    """
+    if rycal is not None:
+        return True
+    try:
+        import pytesseract
+        small = cv2.resize(gray, None, fx=0.5, fy=0.5,
+                           interpolation=cv2.INTER_AREA)
+        txt = pytesseract.image_to_string(small, config="--psm 11").upper()
+        return "ABSORPT" in txt
+    except Exception:
+        return True  # fail open: keep legacy behaviour if OCR breaks
+
+
+def _stroke_width(cmask, fr, curves):
+    """Median ink-run thickness sampled along the traced curves."""
+    yt, yb = fr["y_top"], fr["y_bottom"]
+    lens = []
+    for c in curves:
+        px = np.round(np.asarray(c["px"])).astype(int)
+        py = np.asarray(c["py"], float)
+        for x, y in list(zip(px, py))[::7]:
+            for lo, hi in _col_runs(cmask, int(x), yt, yb):
+                if lo - 2 <= y <= hi + 2:
+                    lens.append(hi - lo + 1)
+                    break
+    return float(np.median(lens)) if lens else float(_s(4))
+
+
+def _walk_runs(cmask, fr, em_lookup, start_x, start_run, direction, stop_x, ws,
+               bw_raw=None):
+    """Chain-walk ink runs column by column from start_x toward stop_x.
+
+    Accepts a run when its y-interval overlaps the previously accepted run
+    (generous gap), skipping runs claimed by the emission trace.  Records the
+    run TOP for tall runs (near-vertical vibronic spikes) and the run centre
+    for normal-stroke runs, so needle peaks keep their true height.
+
+    When the curve mask has no candidate run, falls back to the raw binary
+    (bw_raw) — isolate_curves drops narrow curve components below its width
+    threshold, and those gaps must still be bridged.  Raw evidence only
+    counts if the walk later re-meets curve-mask ink: a trailing raw-only
+    streak is trimmed, so the walk cannot wander off into stray text.
+    """
+    yt, yb, xl, xr = fr["y_top"], fr["y_bottom"], fr["x_left"], fr["x_right"]
+    bwid = _s(4)
+    gap = _s(25)
+    max_miss = _s(12)
+    # keep clear of the vertical frame lines when reading the raw binary
+    lo_x = xl + bwid + 2
+    hi_x = xr - bwid - 2
+    pts = []          # (x, y, from_cmask)
+    prev_lo, prev_hi = start_run
+    misses = 0
+    blocked = 0       # columns where ink exists but is claimed by the
+                      # other curve (a crossing) — not counted as misses
+    hit_boundary = True   # False if the walk dies from misses
+    x = start_x + direction
+    while (direction < 0 and x >= stop_x) or (direction > 0 and x <= stop_x):
+        # the uncertainty cone widens while walking blind through a crossing
+        gap_dyn = gap + 2 * blocked
+        cands = []
+        saw_claimed = False
+        for lo, hi in _col_runs(cmask, x, yt, yb):
+            if lo > prev_hi + gap_dyn or hi < prev_lo - gap_dyn:
+                continue
+            emy = em_lookup.get(x)
+            if emy is not None and lo - 2 <= emy <= hi + 2:
+                saw_claimed = True
+                continue
+            cands.append((lo, hi, True))
+        if not cands and bw_raw is not None and lo_x <= x <= hi_x:
+            # raw fallback, clipped inside the frame-line bands
+            for lo, hi in column_runs(bw_raw[:, x],
+                                      yt + bwid + 1, yb - bwid - 1):
+                if lo > prev_hi + gap_dyn or hi < prev_lo - gap_dyn:
+                    continue
+                emy = em_lookup.get(x)
+                if emy is not None and lo - 2 <= emy <= hi + 2:
+                    saw_claimed = True
+                    continue
+                cands.append((lo, hi, False))
+        if not cands:
+            if saw_claimed and blocked <= _s(70):
+                # crossing zone: the ink is there, just owned by the other
+                # curve — keep walking without burning the miss budget
+                blocked += 1
+                x += direction
+                continue
+            misses += 1
+            if misses > max_miss:
+                # dying within a stone's throw of the frame edge still
+                # counts as reaching it — faint tails fade slightly early
+                hit_boundary = abs(x - stop_x) <= _s(30)
+                break
+            x += direction
+            continue
+        misses = 0
+        blocked = 0
+        lo, hi, from_cm = min(
+            cands, key=lambda r: abs(0.5 * (r[0] + r[1])
+                                     - 0.5 * (prev_lo + prev_hi)))
+        y = lo + ws / 2.0 if (hi - lo + 1) > 2.5 * ws else 0.5 * (lo + hi)
+        pts.append((x, y, from_cm))
+        prev_lo, prev_hi = lo, hi
+        x += direction
+    # A trailing raw-only streak that ends near the baseline (a dotted/faint
+    # tail — Berlman dots the emission tail where it overlaps absorption) or
+    # that runs all the way to the plot boundary (a curve cut off by the
+    # frame) is legitimate.  One that dies high mid-plot never re-met curve
+    # ink — more likely text or noise — so it is trimmed.
+    if pts and not pts[-1][2] and not hit_boundary:
+        tail_inten = (yb - pts[-1][1]) / float(yb - yt or 1)
+        if tail_inten >= 0.08:
+            while pts and not pts[-1][2]:
+                pts.pop()
+    return [(x, y) for x, y, _ in pts]
+
+
+def _trace_dotted_tail(bw_raw, cmask, fr, curves):
+    """Follow dotted/dashed overlap tails by slope projection.
+
+    Berlman draws a curve dotted where it overlaps the other curve
+    (emission's short-wavelength tail, absorption's onset edge).  The dots
+    are tiny components that isolate_curves drops, and the chain walk dies
+    inside the crossing zone where every run is claimed by the other curve.
+    Projecting the endpoint slope forward and collecting raw-ink dots near
+    the projection crosses the other stroke without needing contiguity.
+    """
+    yt, yb, xl, xr = fr["y_top"], fr["y_bottom"], fr["x_left"], fr["x_right"]
+    h = float(yb - yt) or 1.0
+    bwid = _s(4)
+    active = [c for c in curves
+              if c.get("role") in ("emission", "absorption", "emission2")]
+    if not active:
+        return
+    ws = _stroke_width(cmask, fr, active)
+
+    for role, side in (("emission", "right"), ("absorption", "left"),
+                       ("absorption", "right")):
+        cur = next((c for c in curves if c.get("role") == role), None)
+        if cur is None:
+            continue
+        px = np.asarray(cur["px"], float)
+        py = np.asarray(cur["py"], float)
+        o = np.argsort(px)
+        px, py = px[o], py[o]
+        if len(px) < 20:
+            continue
+        if side == "right":
+            ex, ey = float(px[-1]), float(py[-1])
+            seg_x, seg_y = px[-40:], py[-40:]
+            direction = 1
+        else:
+            ex, ey = float(px[0]), float(py[0])
+            seg_x, seg_y = px[:40], py[:40]
+            direction = -1
+        if (yb - ey) / h < 0.06:
+            continue  # tail already reaches the baseline
+        if seg_x.max() - seg_x.min() < 3:
+            continue
+        slope = float(np.polyfit(seg_x, seg_y, 1)[0])
+        # A trace ending on a rising flank means the dotted tail starts just
+        # past an apex.  Peaks are roughly symmetric, so project the MIRROR
+        # of the ascent — a flat projection diverges from the tail before
+        # any dot can be collected (the crossing zone hides the first ones).
+        if direction * slope <= 0:
+            slope = -slope
+
+        # runs claimed by other curves, with a small column neighborhood
+        others = {}
+        for c2 in active:
+            if c2 is cur:
+                continue
+            for xo, yo in zip(np.round(np.asarray(c2["px"])).astype(int),
+                              np.asarray(c2["py"], float)):
+                for dx in range(-_s(3), _s(3) + 1):
+                    others.setdefault(int(xo) + dx, []).append(float(yo))
+
+        have = set(np.round(px).astype(int).tolist())
+        pts = []
+        anchor_x, anchor_y = ex, ey
+        miss = 0
+        x = int(round(ex)) + direction
+        lo_x, hi_x = xl + bwid + 2, xr - bwid - 2
+        while lo_x <= x <= hi_x:
+            y_pred = anchor_y + slope * (x - anchor_x)
+            if not (yt < y_pred < yb - 2):
+                break
+            cands = []
+            for lo, hi in column_runs(bw_raw[:, x], yt + bwid + 1,
+                                      yb - bwid - 1):
+                if (hi - lo + 1) > 4 * ws:
+                    continue  # merged/tall run — the other curve's stroke
+                mid = 0.5 * (lo + hi)
+                # loose window until the projection locks onto real dots
+                tol = _s(20) if len(pts) < 3 else _s(14)
+                if abs(mid - y_pred) > tol:
+                    continue
+                if any(lo - 2 <= yo <= hi + 2 for yo in others.get(x, [])):
+                    continue
+                cands.append(mid)
+            if cands:
+                y_here = min(cands, key=lambda m: abs(m - y_pred))
+                pts.append((x, y_here))
+                if len(pts) >= 5:
+                    rx = np.array([p[0] for p in pts[-14:]])
+                    ry = np.array([p[1] for p in pts[-14:]])
+                    if rx.max() - rx.min() >= 3:
+                        slope = float(np.polyfit(rx, ry, 1)[0])
+                anchor_x, anchor_y = float(x), float(y_here)
+                miss = 0
+                if (yb - y_here) / h < 0.015:
+                    break  # reached the baseline
+            else:
+                miss += 1
+                if miss > _s(30):
+                    break
+            x += direction
+        # a genuine overlap tail always descends to the baseline; a chain
+        # that ends high latched onto text or stray ink — discard it
+        if len(pts) < 5 or (yb - pts[-1][1]) / h >= 0.10:
+            continue
+        add = [(p, q) for p, q in pts if int(p) not in have]
+        if add:
+            ax = np.array([p[0] for p in add], float)
+            ay = np.array([p[1] for p in add], float)
+            npx = np.concatenate([px, ax])
+            npy = np.concatenate([py, ay])
+            oo = np.argsort(npx)
+            cur["px"], cur["py"] = npx[oo], npy[oo]
+            cur["cx"] = float(cur["px"].mean())
+
+
+def _label_positions(gray, fr):
+    """Full-scale x-positions of EMISSION / ABSORPTION labels inside the plot."""
+    import pytesseract
+    small = cv2.resize(gray, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+    d = pytesseract.image_to_data(small, config="--psm 11",
+                                  output_type=pytesseract.Output.DICT)
+    xl, xr, yt, yb = fr["x_left"], fr["x_right"], fr["y_top"], fr["y_bottom"]
+    em_xs, ab_xs = [], []
+    for i, t in enumerate(d["text"]):
+        t = (t or "").strip().upper()
+        if not t:
+            continue
+        cx = (d["left"][i] + d["width"][i] / 2.0) * 2
+        cy = (d["top"][i] + d["height"][i] / 2.0) * 2
+        if not (xl < cx < xr and yt < cy < yb):
+            continue
+        if "EMISSION" in t or "EMISSTON" in t:
+            em_xs.append(cx)
+        elif "ABSORPT" in t:
+            ab_xs.append(cx)
+    return em_xs, ab_xs
+
+
+def _label_guided_fix(fr, curves, em_xs, ab_xs):
+    """Catch gross role errors using printed label positions.
+
+    Berlman places EMISSION / ABSORPTION labels beside their curves.  When
+    the curve exported as emission peaks much closer to an ABSORPTION label
+    than to the EMISSION label (azulene-style pages with magnified insets),
+    demote it and carve the true emission out of the absorption trace as the
+    segment peaking nearest the EMISSION label.
+    """
+    if not em_xs or not ab_xs:
+        return
+    yt, yb = fr["y_top"], fr["y_bottom"]
+    h = float(yb - yt) or 1.0
+    plotW = fr["x_right"] - fr["x_left"]
+    em = next((c for c in curves if c.get("role") == "emission"), None)
+    ab = next((c for c in curves if c.get("role") == "absorption"), None)
+    if em is None or ab is None:
+        return
+    epx = np.asarray(em["px"], float); epy = np.asarray(em["py"], float)
+    em_peak_inten = float(((yb - epy) / h).max())
+    if em_peak_inten >= 0.90:
+        # a full-height emission is trusted regardless of label geometry —
+        # carbazole-type spectra peak at their right edge, far from where
+        # the label sits
+        return
+    peak_x = float(epx[int(np.argmin(epy))])
+    d_em = min(abs(peak_x - x) for x in em_xs)
+    d_ab = min(abs(peak_x - x) for x in ab_xs)
+    if not (d_ab * 1.2 < d_em):
+        return  # roles look sane
+
+    # carve the true emission out of the absorption trace: local peak of the
+    # absorption intensity within a window around the EMISSION label.  Only
+    # commit (demote the impostor) if the carve actually succeeds.
+    label_x = min(em_xs, key=lambda x: abs(x - peak_x + 1))
+    apx = np.asarray(ab["px"], float); apy = np.asarray(ab["py"], float)
+    o = np.argsort(apx); apx, apy = apx[o], apy[o]
+    inten = (yb - apy) / h
+    win = (apx > label_x - 0.25 * plotW) & (apx < label_x + 0.25 * plotW)
+    if not win.any():
+        return
+    idxs = np.where(win)[0]
+    pk = idxs[int(np.argmax(inten[idxs]))]
+    if inten[pk] < 0.9:
+        return
+    # expand from the peak to the bounding deep minima
+    lo_i = pk
+    while lo_i > 0 and not (inten[lo_i] < 0.18 and inten[lo_i] <= inten[lo_i - 1]):
+        lo_i -= 1
+    hi_i = pk
+    n = len(apx)
+    while hi_i < n - 1 and not (inten[hi_i] < 0.18 and inten[hi_i] <= inten[hi_i + 1]):
+        hi_i += 1
+    if hi_i - lo_i < 30:
+        return
+    em["role"] = "extra"   # magnified inset / second absorption band
+    seg = np.zeros(n, bool)
+    seg[lo_i:hi_i + 1] = True
+    curves.append(dict(px=apx[seg], py=apy[seg], cx=float(apx[seg].mean()),
+                       role="emission"))
+    ab["px"], ab["py"] = apx[~seg], apy[~seg]
+    if len(ab["px"]):
+        ab["cx"] = float(np.mean(ab["px"]))
+
+
+def _split_swallowed(fr, curves, has_abs):
+    """Split a trace that swallowed the other curve.
+
+    On mirror-image pages (anthracene, tetracene, chrysene) emission and
+    absorption both drop to the baseline at a deep valley; the tracer can run
+    straight through it and claim both curves as one.  Detect a sustained
+    near-zero valley with substantial (>0.5 intensity) mass on BOTH sides and
+    reassign the far side to the other role.
+    """
+    if not has_abs:
+        return
+    yt, yb = fr["y_top"], fr["y_bottom"]
+    h = float(yb - yt)
+    if h <= 0:
+        return
+
+    def valleys(px, py):
+        inten = (yb - py) / h
+        # emission/absorption crossings sit as high as ~0.08; genuine
+        # emission vibronic dips stay above ~0.2
+        low = inten < 0.09
+        runs, i, n = [], 0, len(px)
+        while i < n:
+            if low[i]:
+                j = i
+                while j < n and low[j]:
+                    j += 1
+                # narrow mirror-image valleys (anthracene) are ~30-50 px wide
+                if px[j - 1] - px[i] >= _s(12):
+                    runs.append((i, j))
+                i = j
+            else:
+                i += 1
+        return inten, runs
+
+    for _ in range(3):
+        changed = False
+        em = next((c for c in curves if c.get("role") == "emission"), None)
+        ab = next((c for c in curves if c.get("role") == "absorption"), None)
+
+        if em is not None:
+            px = np.asarray(em["px"], float); py = np.asarray(em["py"], float)
+            o = np.argsort(px); px, py = px[o], py[o]
+            inten, runs = valleys(px, py)
+            # take the rightmost valley with real mass on BOTH sides — the
+            # curve's own leading/trailing zero-tails are valleys too, but
+            # they fail the mass test
+            hit = next(((i0, j0) for i0, j0 in reversed(runs)
+                        if i0 > 10 and j0 < len(px) - 10
+                        and inten[:i0].max() > 0.5
+                        and inten[j0:].max() > 0.5), None)
+            if hit:
+                i0, j0 = hit
+                if True:
+                    mid = (i0 + j0) // 2
+                    em["px"], em["py"] = px[:mid], py[:mid]
+                    em["cx"] = float(em["px"].mean())
+                    mx, my = px[mid:], py[mid:]
+                    if ab is None:
+                        curves.append(dict(px=mx, py=my, cx=float(mx.mean()),
+                                           role="absorption"))
+                    else:
+                        have = set(np.round(np.asarray(ab["px"])).astype(int).tolist())
+                        keep = np.array([int(round(v)) not in have for v in mx])
+                        mx, my = mx[keep], my[keep]
+                        apx = np.concatenate([np.asarray(ab["px"], float), mx])
+                        apy = np.concatenate([np.asarray(ab["py"], float), my])
+                        oo = np.argsort(apx)
+                        ab["px"], ab["py"] = apx[oo], apy[oo]
+                        ab["cx"] = float(ab["px"].mean())
+                    changed = True
+
+        if not changed and ab is not None:
+            px = np.asarray(ab["px"], float); py = np.asarray(ab["py"], float)
+            o = np.argsort(px); px, py = px[o], py[o]
+            inten, runs = valleys(px, py)
+            hit = next(((i0, j0) for i0, j0 in runs
+                        if i0 > 10 and j0 < len(px) - 10
+                        and inten[:i0].max() > 0.5
+                        and inten[j0:].max() > 0.5), None)
+            if hit:
+                i0, j0 = hit
+                if True:
+                    mid = (i0 + j0) // 2
+                    ab["px"], ab["py"] = px[mid:], py[mid:]
+                    ab["cx"] = float(ab["px"].mean())
+                    mx, my = px[:mid], py[:mid]
+                    if em is None:
+                        curves.append(dict(px=mx, py=my, cx=float(mx.mean()),
+                                           role="emission"))
+                    else:
+                        have = set(np.round(np.asarray(em["px"])).astype(int).tolist())
+                        keep = np.array([int(round(v)) not in have for v in mx])
+                        mx, my = mx[keep], my[keep]
+                        epx = np.concatenate([np.asarray(em["px"], float), mx])
+                        epy = np.concatenate([np.asarray(em["py"], float), my])
+                        oo = np.argsort(epx)
+                        em["px"], em["py"] = epx[oo], epy[oo]
+                        em["cx"] = float(em["px"].mean())
+                    changed = True
+
+        if not changed:
+            break
+
+
+def _refine_curves(cmask, bw_raw, fr, curves):
+    """Post-trace refinement: recover spike tops and missed span.
+
+    1. Spike lift — where a traced point sits inside an abnormally tall ink
+       run (a near-vertical vibronic spike that single-valued tracing collapsed
+       to its midpoint), move the point to the run top.
+    2. Frame-top touch — runs reaching the blanked border band are checked
+       against the raw binary; genuine contact snaps the point to y_top
+       (intensity exactly 1.0).
+    3. Absorption extension — walk the ink-run chain outward from both
+       endpoints and across interior x-gaps, so spike regions the tracer
+       skipped are recovered from the mask.
+    """
+    yt, yb, xl, xr = fr["y_top"], fr["y_bottom"], fr["x_left"], fr["x_right"]
+    bwid = _s(4)
+    active = [c for c in curves
+              if c.get("role") in ("emission", "absorption", "emission2")]
+    if not active:
+        return
+    ws = _stroke_width(cmask, fr, active)
+
+    em = next((c for c in curves if c.get("role") == "emission"), None)
+    em_lookup = {}
+    if em is not None:
+        em_lookup = {int(x): float(y)
+                     for x, y in zip(np.round(np.asarray(em["px"])).astype(int),
+                                     np.asarray(em["py"], float))}
+
+    # ── 3. span extension for both primary roles (before lift, so the new
+    #       points get lifted too).  Emission needs it as much as absorption:
+    #       vibronic needle regions get skipped by the velocity-gated tracer
+    #       on either curve.
+    for role in ("emission", "absorption"):
+        cur = next((c for c in curves if c.get("role") == role), None)
+        if cur is None:
+            continue
+        # runs claimed by any OTHER active curve are off limits
+        other_lookup = {}
+        for c2 in active:
+            if c2 is cur:
+                continue
+            for x, y in zip(np.round(np.asarray(c2["px"])).astype(int),
+                            np.asarray(c2["py"], float)):
+                other_lookup.setdefault(int(x), float(y))
+
+        px = np.asarray(cur["px"], float)
+        py = np.asarray(cur["py"], float)
+        o = np.argsort(px)
+        px, py = px[o], py[o]
+        have = set(np.round(px).astype(int).tolist())
+
+        def run_at(x, y):
+            for lo, hi in _col_runs(cmask, int(round(x)), yt, yb):
+                if lo - 3 <= y <= hi + 3:
+                    return (lo, hi)
+            return (int(round(y)) - int(ws / 2), int(round(y)) + int(ws / 2))
+
+        new_pts = []
+        # outward from both endpoints
+        new_pts += _walk_runs(cmask, fr, other_lookup, int(round(px[0])),
+                              run_at(px[0], py[0]), -1, xl + 1, ws,
+                              bw_raw=bw_raw)
+        new_pts += _walk_runs(cmask, fr, other_lookup, int(round(px[-1])),
+                              run_at(px[-1], py[-1]), +1, xr - 1, ws,
+                              bw_raw=bw_raw)
+        # across interior gaps, from both sides (a one-sided walk can die at
+        # a claimed/empty stretch that the other side crosses easily)
+        ipx = np.round(px).astype(int)
+        for i in range(len(ipx) - 1):
+            if ipx[i + 1] - ipx[i] > _s(10):
+                fwd = _walk_runs(cmask, fr, other_lookup, ipx[i],
+                                 run_at(px[i], py[i]), +1,
+                                 ipx[i + 1] - 1, ws, bw_raw=bw_raw)
+                got = {int(p[0]) for p in fwd}
+                bwd = _walk_runs(cmask, fr, other_lookup, ipx[i + 1],
+                                 run_at(px[i + 1], py[i + 1]), -1,
+                                 ipx[i] + 1, ws, bw_raw=bw_raw)
+                new_pts += fwd + [p for p in bwd if int(p[0]) not in got]
+        add = [(x, y) for x, y in new_pts if int(x) not in have]
+        if add:
+            ax = np.array([p[0] for p in add], float)
+            ay = np.array([p[1] for p in add], float)
+            px = np.concatenate([px, ax])
+            py = np.concatenate([py, ay])
+            o = np.argsort(px)
+            cur["px"], cur["py"] = px[o], py[o]
+            cur["cx"] = float(px.mean())
+
+    # ── 1 + 2. spike lift and frame-top touch, all active curves ──
+    claims = {}
+    for ci, c in enumerate(active):
+        for x, y in zip(np.round(np.asarray(c["px"])).astype(int),
+                        np.asarray(c["py"], float)):
+            claims.setdefault(int(x), []).append((ci, float(y)))
+
+    for ci, c in enumerate(active):
+        px = np.round(np.asarray(c["px"])).astype(int)
+        py = np.asarray(c["py"], float)
+        newy = py.copy()
+        for i, (x, y) in enumerate(zip(px, py)):
+            run = None
+            for lo, hi in _col_runs(cmask, int(x), yt, yb):
+                if lo - 2 <= y <= hi + 2:
+                    run = (lo, hi)
+                    break
+            if run is None:
+                continue
+            lo, hi = run
+            # crossing check over a small x-neighborhood: at a crossing the
+            # two ink strokes merge into one tall run, and the other trace
+            # may miss this exact column while still being right next door
+            shared = False
+            for dx in range(-_s(4), _s(4) + 1):
+                if any(cj != ci and lo - 2 <= yj <= hi + 2
+                       for cj, yj in claims.get(int(x) + dx, [])):
+                    shared = True
+                    break
+            if shared:
+                continue
+            # probe the raw binary above the mask run: needle tips form tiny
+            # components that isolate_curves drops, truncating the run
+            raw_top = int(lo)
+            g_miss = 0
+            yy = int(lo) - 1
+            floor = yt + bwid
+            while yy > floor and g_miss <= _s(3):
+                if bw_raw[yy, int(x)] > 0:
+                    raw_top = yy
+                    g_miss = 0
+                else:
+                    g_miss += 1
+                yy -= 1
+            eff_lo = min(int(lo), raw_top)
+            if (hi - eff_lo + 1) > 2.5 * ws:
+                target = eff_lo + ws / 2.0
+                if target < newy[i]:
+                    newy[i] = target
+            if eff_lo <= yt + bwid + 3:
+                col = bw_raw[yt:min(int(eff_lo) + 2, yb) + 1, int(x)]
+                if col.size and (col > 0).mean() > 0.6:
+                    newy[i] = yt
+        c["py"] = newy
+
+    # ── 4. prune tiny detached near-baseline clusters — stray seed points
+    #       far from the curve body make the overlay polyline (and any
+    #       consumer sorting by x) cut a fabricated diagonal across the plot
+    h = float(yb - yt) or 1.0
+    for c in curves:
+        if c.get("role") not in ("emission", "absorption"):
+            continue
+        px = np.asarray(c["px"], float)
+        py = np.asarray(c["py"], float)
+        o = np.argsort(px)
+        px, py = px[o], py[o]
+        if len(px) < 10:
+            continue
+        splits = np.where(np.diff(px) > _s(50))[0]
+        if len(splits) == 0:
+            continue
+        bounds = [0] + (splits + 1).tolist() + [len(px)]
+        clusters = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
+        biggest = max(clusters, key=lambda t: t[1] - t[0])
+        keep = np.ones(len(px), bool)
+        for a, b in clusters:
+            if (a, b) == biggest:
+                continue
+            n_pts = b - a
+            inten_max = float(((yb - py[a:b]) / h).max())
+            if n_pts < 8 and inten_max < 0.08:
+                keep[a:b] = False
+        if not keep.all():
+            c["px"], c["py"] = px[keep], py[keep]
+            c["cx"] = float(c["px"].mean())
+
+
 def _extend_tail_to_zero(curves, fr):
     """Extend curve tails smoothly to zero when they end above ~3% intensity."""
     yt, yb = fr["y_top"], fr["y_bottom"]
@@ -954,6 +1573,11 @@ def _extend_tail_to_zero(curves, fr):
                                         ("left", tail_inten_left, slice(None, 50))]:
             if inten < 0.03:
                 continue
+            # A tail ending high means the TRACE is incomplete, not the
+            # curve — a synthetic ramp from 0.7 intensity across half the
+            # plot would fabricate data.  Only finish off near-zero tails.
+            if inten > 0.12:
+                continue
             tail_px = px[idx_slice]
             tail_py = py[idx_slice]
             if len(tail_px) < 10:
@@ -965,7 +1589,7 @@ def _extend_tail_to_zero(curves, fr):
                 x_end = px[-1]
                 y_end = py[-1]
                 steps = max(5, int(abs(yb - y_end) / max(0.1, abs(slope))))
-                steps = min(steps, int((xr - x_end)))
+                steps = min(steps, int((xr - x_end)), _s(120))
                 if steps < 3:
                     continue
                 ext_x = np.arange(1, steps + 1) + x_end
@@ -979,7 +1603,7 @@ def _extend_tail_to_zero(curves, fr):
                 x_start = px[0]
                 y_start = py[0]
                 steps = max(5, int(abs(yb - y_start) / max(0.1, abs(slope))))
-                steps = min(steps, int((x_start - xl)))
+                steps = min(steps, int((x_start - xl)), _s(120))
                 if steps < 3:
                     continue
                 ext_x = x_start - np.arange(1, steps + 1).astype(float)
@@ -1000,7 +1624,15 @@ def _physical(curves, fr, xcal, rycal):
         c["px"] = np.asarray(c["px"]); c["py"] = np.asarray(c["py"])
         if xcal:
             c["wavenumber"] = xcal["a"] * c["px"] + xcal["b"]
-        c["intensity"] = px_to_intensity(c["py"], fr)
+        inten = px_to_intensity(c["py"], fr)
+        # Berlman normalizes every standard curve to unit peak.  A raw max
+        # just under 1.0 is stroke-width / border-blanking bias — snap it.
+        # Genuinely sub-unity curves (CURVE II variants) stay untouched.
+        raw_max = float(inten.max()) if len(inten) else 0.0
+        c["raw_max_intensity"] = raw_max
+        if c.get("role") in ("emission", "absorption") and raw_max >= 0.96:
+            inten = inten / raw_max
+        c["intensity"] = inten
         if rycal and c["role"] == "absorption":
             c["extinction"] = rycal["a"] * c["py"] + rycal["b"]
     return curves
@@ -1159,12 +1791,87 @@ def digitize(path):
             except Exception:
                 continue
 
+    has_abs = _page_has_absorption(gray, rycal)
+
+    # Recovery finds the second curve regardless of page type — on standard
+    # pages it is the absorption panel, on emission-only comparison pages it
+    # is CURVE II (relabelled below).
     if not any(c.get("role") == "absorption" for c in best):
         _recover_absorption(best_cmask, fr, best)
 
+    if not has_abs:
+        # Emission-only comparison page (CURVE I / II): every curve is an
+        # emission variant.  The tallest becomes the primary emission.
+        cands = [c for c in best
+                 if c.get("role") in ("emission", "absorption", "extra")]
+        if cands:
+            def peak_y(c):
+                return float(np.min(np.asarray(c["py"], float)))
+            tallest = min(cands, key=peak_y)  # lowest y = highest intensity
+            for c in cands:
+                c["role"] = "emission" if c is tallest else "emission2"
+
+    _split_swallowed(fr, best, has_abs)
+    _refine_curves(best_cmask, bw, fr, best)
+    # The extension walk itself can run through a deep valley and swallow
+    # the other curve — split again, then let a second refine pass finish
+    # the reshaped curves (walks are gap-driven, so this is near-idempotent).
+    _split_swallowed(fr, best, has_abs)
+    _refine_curves(best_cmask, bw, fr, best)
+
+    # Dotted overlap tails (drawn where the curves cross) need slope
+    # projection — the chain walk cannot cross the other curve's stroke.
+    _trace_dotted_tail(bw, best_cmask, fr, best)
+
+    # Printed EMISSION/ABSORPTION labels are the ground truth for roles —
+    # catch pages where geometry fooled the classifier (magnified insets,
+    # multi-band absorption).
+    if has_abs:
+        try:
+            em_xs, ab_xs = _label_positions(gray, fr)
+            _label_guided_fix(fr, best, em_xs, ab_xs)
+        except Exception:
+            pass
+
+    # Trace big unclaimed ink (dashed variants, magnified insets, scattered-
+    # light lines) as extras so the overlay and F1 reflect the whole page.
+    # Extras are never exported as spectra.
+    try:
+        claimed = [c for c in best if c.get("role") in
+                   ("emission", "absorption", "emission2", "extra")]
+        recon = reconstruct_mask(best_cmask.shape, claimed, thickness=_s(5))
+        resid = cv2.bitwise_and(
+            best_cmask, cv2.bitwise_not(
+                cv2.dilate(recon, np.ones((_s(7), _s(7)), np.uint8))))
+        bridged = cv2.morphologyEx(
+            resid, cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (_s(60), 1)))
+        nres, labres, statres, _ = cv2.connectedComponentsWithStats(bridged, 8)
+        plotW = fr["x_right"] - fr["x_left"]
+        added = 0
+        for i in range(1, nres):
+            rx, ry, rw, rh, rarea = statres[i]
+            if rw < 0.07 * plotW or added >= 6:
+                continue
+            comp = (labres == i) & (resid > 0)
+            cols = np.where(comp.any(axis=0))[0]
+            if len(cols) < 30:
+                continue
+            pxs, pys = [], []
+            for xc in cols:
+                ys = np.where(comp[:, xc])[0]
+                pxs.append(float(xc))
+                pys.append(float(np.median(ys)))
+            best.append(dict(px=np.array(pxs), py=np.array(pys),
+                             cx=float(np.mean(pxs)), role="extra"))
+            added += 1
+    except Exception:
+        pass
+
     curves = _physical(best, fr, xcal, rycal)
     return dict(path=path, frame=fr, xcal=xcal, rycal=rycal,
-                cmask=best_cmask, comps=comps, curves=curves, strategy=best_tag)
+                cmask=best_cmask, comps=comps, curves=curves,
+                strategy=best_tag, has_absorption=has_abs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1172,7 +1879,8 @@ def digitize(path):
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROLE_COL = {"emission": (0, 0, 255), "absorption": (0, 150, 0),
-            "extra": (200, 0, 200), None: (120, 120, 0)}
+            "emission2": (0, 140, 255), "extra": (200, 0, 200),
+            None: (120, 120, 0)}
 
 
 def draw_overlay(gray, curves, faint_mask=None, step=None, radius=None,
@@ -1190,8 +1898,16 @@ def draw_overlay(gray, curves, faint_mask=None, step=None, radius=None,
         xs = np.asarray(c["px"]); ys = np.round(np.asarray(c["py"])).astype(int)
         order = np.argsort(xs)
         xs, ys = xs[order], ys[order]
-        pts = np.stack([xs.astype(int), ys], axis=1).reshape(-1, 1, 2)
-        cv2.polylines(overlay, [pts], False, col, thickness=_s(2))
+        # break the polyline at data gaps so a missing stretch renders as a
+        # gap instead of a fabricated straight chord
+        brk = np.where(np.diff(xs) > _s(20))[0]
+        segs = np.split(np.arange(len(xs)), brk + 1)
+        for seg in segs:
+            if len(seg) < 2:
+                continue
+            pts = np.stack([xs[seg].astype(int), ys[seg]],
+                           axis=1).reshape(-1, 1, 2)
+            cv2.polylines(overlay, [pts], False, col, thickness=_s(2))
         for k in range(0, len(xs), step):
             cv2.circle(overlay, (int(xs[k]), int(ys[k])), radius, col, -1)
     cv2.addWeighted(overlay, alpha, vis, 1 - alpha, 0, vis)
