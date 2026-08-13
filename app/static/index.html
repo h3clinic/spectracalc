@@ -8,7 +8,7 @@
   --toolbar-h: 52px; --sidebar-w: 280px;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background:var(--bg); color:var(--text); font-family:'Inter','SF Pro',system-ui,sans-serif; overflow:hidden; height:100vh; width:100vw; }
+body { background:var(--bg); color:var(--text); font-family:'Inter','SF Pro',system-ui,sans-serif; overflow:hidden; height:100vh; width:100vw; display:flex; flex-direction:column; }
 
 /* ── Toolbar ── */
 .toolbar {
@@ -33,7 +33,7 @@ body { background:var(--bg); color:var(--text); font-family:'Inter','SF Pro',sys
 .status { font-size:12px; color:var(--text2); margin-left:auto; }
 
 /* ── Layout ── */
-.main { display:flex; height:calc(100vh - var(--toolbar-h)); }
+.main { display:flex; flex:1; min-height:0; }
 .canvas-wrap {
   flex:1; position:relative; overflow:hidden; cursor:crosshair;
   background:#0a0b0e;
@@ -96,6 +96,37 @@ input#fileInput { display:none; }
 }
 .toast.show { opacity:1; pointer-events:auto; }
 
+/* ── Curve chips ── */
+.chip {
+  height:34px; padding:0 12px; border-radius:17px; border:1.5px solid var(--border);
+  background:var(--surface2); color:var(--text); font-size:13px; cursor:pointer;
+  display:flex; align-items:center; gap:7px; white-space:nowrap; transition:all .15s;
+}
+.chip .swatch { width:11px; height:11px; border-radius:50%; }
+.chip.active { border-color:var(--chip-c, var(--accent)); background:color-mix(in srgb, var(--chip-c, var(--accent)) 22%, var(--surface2)); font-weight:600; }
+
+/* ── Results panel ── */
+#results {
+  display:none; background:var(--surface); border-top:1px solid var(--border);
+  padding:10px 14px; gap:12px; overflow-x:auto; align-items:stretch; flex-shrink:0;
+}
+#results.show { display:flex; }
+.rcard {
+  background:var(--surface2); border:1px solid var(--border); border-radius:10px;
+  min-width:330px; max-width:330px; padding:10px 12px; display:flex; flex-direction:column; gap:8px;
+}
+.rcard .rhead { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; }
+.rcard .rhead .swatch { width:12px; height:12px; border-radius:50%; flex-shrink:0; }
+.rcard .rhead .meta { margin-left:auto; color:var(--text2); font-weight:400; font-size:11px; }
+.rcard img { width:100%; border-radius:6px; cursor:zoom-in; background:#fff; }
+.rcard .rlinks { display:flex; gap:8px; }
+.rcard .rlinks a {
+  flex:1; text-align:center; font-size:12px; padding:6px 4px; border-radius:6px;
+  background:var(--border); color:var(--text); text-decoration:none; transition:background .15s;
+}
+.rcard .rlinks a:hover { background:var(--accent); color:#fff; }
+.gen-note { font-size:11px; color:var(--text2); align-self:center; padding:0 6px; min-width:120px; }
+
 /* ── Responsive ── */
 @media (max-width: 700px) {
   .sidebar { display:none; }
@@ -110,12 +141,12 @@ input#fileInput { display:none; }
   <label class="btn btn-primary" for="fileInput">Upload Image</label>
   <input type="file" id="fileInput" accept="image/*">
   <div class="sep"></div>
-  <button class="btn mode-btn" id="btnAdd" onclick="setMode('add')">Add Dots</button>
-  <button class="btn mode-btn" id="btnErase" onclick="setMode('erase')">Erase Dots</button>
+  <button class="btn mode-btn" id="btnAdd" onclick="setMode('add')">Add Same</button>
+  <button class="btn mode-btn" id="btnErase" onclick="setMode('erase')">Erase</button>
   <button class="btn mode-btn" id="btnPan" onclick="setMode('pan')">Pan</button>
   <div class="sep"></div>
-  <button class="btn em" id="btnEm" onclick="setRole('emission')">Emission</button>
-  <button class="btn ab" id="btnAb" onclick="setRole('absorption')">Absorption</button>
+  <span id="curveChips" style="display:flex;gap:6px;align-items:center"></span>
+  <button class="btn" id="btnNewCurve" onclick="addNewCurve()" title="Start a new spectrum in a fresh color — for merged or missing curves">+ Add Different</button>
   <div class="sep"></div>
   <button class="btn" onclick="undoAction()">Undo</button>
   <button class="btn" onclick="zoomIn()">Zoom +</button>
@@ -164,16 +195,18 @@ input#fileInput { display:none; }
 
     <h3 style="margin-top:20px">Controls</h3>
     <div style="font-size:12px; color:var(--text2); line-height:1.6">
-      <b>Add mode:</b> click to place a dot<br>
-      <b>Erase mode:</b> click near a dot to remove it<br>
-      <b>Pan mode:</b> drag to move the view<br>
-      <b>Scroll:</b> zoom in/out<br>
-      <b>Ctrl+Z:</b> undo last action<br>
-      <b>E / A:</b> switch emission / absorption<br>
-      <b>1 / 2 / 3:</b> add / erase / pan mode
+      <b>Add Same:</b> click to place dots on the selected curve<br>
+      <b>+ Add Different:</b> start a NEW spectrum in a fresh color (for merged or missing curves)<br>
+      <b>Erase:</b> click near a dot to remove it<br>
+      <b>Chips:</b> click a colored chip to select which curve you're editing<br>
+      <b>Pan / Scroll:</b> drag to move, scroll to zoom<br>
+      <b>Ctrl+Z:</b> undo · <b>E / A:</b> select emission / absorption · <b>1 / 2 / 3:</b> add / erase / pan<br><br>
+      After any dot change the bottom panel regenerates each curve's <b>Excel chart</b>, <b>CSV + Excel downloads</b>, and <b>PhotochemCAD-style page</b>.
     </div>
   </div>
 </div>
+
+<div id="results"></div>
 
 <div class="toast" id="toast"></div>
 
@@ -186,23 +219,52 @@ let img = null;          // Image object
 let imgW = 0, imgH = 0;
 let zoom = 1, panX = 0, panY = 0;
 let mode = 'pan';        // 'add' | 'erase' | 'pan'
-let activeRole = 'emission';
-let curves = [];          // [{role, px[], py[]}]
+let activeIdx = 0;        // index into curves
+let curves = [];          // [{role, name, color, px[], py[]}]
 let undoStack = [];
 let appState = {};        // xcal, frame, frame_orig, scale, etc.
 let isPanning = false, panStartX = 0, panStartY = 0;
 
-// ── Mode / role ──
+const ROLE_COLORS = { emission:'#e74c3c', absorption:'#27ae60', emission2:'#f59e0b', extra:'#9b59b6' };
+const NEW_PALETTE = ['#3b82f6', '#e91e63', '#00bcd4', '#f59e0b', '#8bc34a', '#ff7043'];
+let newCurveCounter = 0;
+
+// ── Mode / active curve ──
 function setMode(m) {
   mode = m;
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
   document.getElementById({add:'btnAdd',erase:'btnErase',pan:'btnPan'}[m]).classList.add('active');
   wrap.style.cursor = m === 'pan' ? 'grab' : m === 'erase' ? 'pointer' : 'crosshair';
 }
-function setRole(r) {
-  activeRole = r;
-  document.getElementById('btnEm').classList.toggle('active', r === 'emission');
-  document.getElementById('btnAb').classList.toggle('active', r === 'absorption');
+function setActiveCurve(i) {
+  activeIdx = i;
+  renderChips();
+}
+function setRole(r) {  // keyboard shortcut compatibility (E / A)
+  const i = curves.findIndex(c => c.role === r);
+  if (i >= 0) setActiveCurve(i);
+}
+function addNewCurve() {
+  const color = NEW_PALETTE[newCurveCounter % NEW_PALETTE.length];
+  newCurveCounter++;
+  const name = 'new-spectrum-' + newCurveCounter;
+  curves.push({ role: 'custom', name, color, px: [], py: [] });
+  setActiveCurve(curves.length - 1);
+  setMode('add');
+  showToast(`New spectrum "${name}" — click to place its dots`);
+  updateInfo();
+}
+function renderChips() {
+  const box = document.getElementById('curveChips');
+  box.innerHTML = '';
+  curves.forEach((c, i) => {
+    const chip = document.createElement('button');
+    chip.className = 'chip' + (i === activeIdx ? ' active' : '');
+    chip.style.setProperty('--chip-c', c.color);
+    chip.innerHTML = `<span class="swatch" style="background:${c.color}"></span>${c.name || c.role} <span style="color:var(--text2)">${c.px.length}</span>`;
+    chip.onclick = () => setActiveCurve(i);
+    box.appendChild(chip);
+  });
 }
 
 // ── File handling ──
@@ -238,12 +300,17 @@ async function handleFile(file) {
 
 function loadResult(data) {
   appState = data;
-  curves = data.curves.map(c => ({
-    role: c.role,
-    px: c.px.map(x => x * data.scale),
-    py: c.py.map(y => y * data.scale),
-  }));
+  curves = data.curves
+    .filter(c => ['emission', 'absorption', 'emission2', 'extra'].includes(c.role))
+    .map(c => ({
+      role: c.role,
+      name: c.role,
+      color: ROLE_COLORS[c.role] || '#888',
+      px: c.px.map(x => x * data.scale),
+      py: c.py.map(y => y * data.scale),
+    }));
   undoStack = [];
+  newCurveCounter = 0;
 
   img = new Image();
   img.onload = () => {
@@ -252,8 +319,10 @@ function loadResult(data) {
     zoomFit();
     updateInfo();
     setMode('add');
-    setRole('emission');
+    const emi = curves.findIndex(c => c.role === 'emission');
+    setActiveCurve(emi >= 0 ? emi : 0);
     document.getElementById('status').textContent = `${data.molecule || 'Spectrum'} — F1 ${data.f1}`;
+    scheduleGenerate();   // build the initial output set
   };
   img.src = 'data:image/png;base64,' + data.image;
 }
@@ -280,8 +349,8 @@ function draw() {
   // Draw dots
   const dotR = Math.max(2, 3 / zoom);
   for (const c of curves) {
-    ctx.fillStyle = c.role === 'absorption' ? '#27ae60' : '#e74c3c';
-    ctx.strokeStyle = c.role === 'absorption' ? '#1a7a42' : '#a83228';
+    ctx.fillStyle = c.color || '#e74c3c';
+    ctx.strokeStyle = 'rgba(0,0,0,.35)';
     ctx.lineWidth = 1 / zoom;
     for (let i = 0; i < c.px.length; i++) {
       ctx.beginPath();
@@ -341,18 +410,15 @@ canvas.addEventListener('mousedown', e => {
   }
 
   if (mode === 'add') {
-    // Find or create curve for activeRole
-    let curve = curves.find(c => c.role === activeRole);
-    if (!curve) {
-      curve = { role: activeRole, px: [], py: [] };
-      curves.push(curve);
-    }
+    if (!curves.length) { addNewCurve(); }
+    const curve = curves[activeIdx] || curves[0];
     curve.px.push(ix);
     curve.py.push(iy);
-    undoStack.push({ type: 'add', role: activeRole, x: ix, y: iy });
-    showToast(`Added ${activeRole} point`);
+    undoStack.push({ type: 'add', curveIdx: curves.indexOf(curve), x: ix, y: iy });
+    showToast(`Added ${curve.name || curve.role} point`);
     updateInfo();
     draw();
+    scheduleGenerate();
   }
 
   if (mode === 'erase') {
@@ -373,10 +439,11 @@ canvas.addEventListener('mousedown', e => {
       const c = curves[bestCurve];
       const rx = c.px.splice(bestIdx, 1)[0];
       const ry = c.py.splice(bestIdx, 1)[0];
-      undoStack.push({ type: 'erase', curveIdx: bestCurve, role: c.role, idx: bestIdx, x: rx, y: ry });
-      showToast(`Erased ${c.role} point`);
+      undoStack.push({ type: 'erase', curveIdx: bestCurve, idx: bestIdx, x: rx, y: ry });
+      showToast(`Erased ${c.name || c.role} point`);
       updateInfo();
       draw();
+      scheduleGenerate();
     }
   }
 });
@@ -413,21 +480,19 @@ document.addEventListener('keydown', e => {
 function undoAction() {
   if (!undoStack.length) return;
   const action = undoStack.pop();
-  if (action.type === 'add') {
-    const c = curves.find(c => c.role === action.role);
-    if (c) {
-      const idx = c.px.lastIndexOf(action.x);
-      if (idx >= 0) { c.px.splice(idx, 1); c.py.splice(idx, 1); }
-    }
+  const c = curves[action.curveIdx];
+  if (action.type === 'add' && c) {
+    const idx = c.px.lastIndexOf(action.x);
+    if (idx >= 0) { c.px.splice(idx, 1); c.py.splice(idx, 1); }
     showToast('Undid add');
-  } else if (action.type === 'erase') {
-    let c = curves[action.curveIdx];
-    if (!c || c.role !== action.role) c = curves.find(c => c.role === action.role);
-    if (c) { c.px.splice(action.idx, 0, action.x); c.py.splice(action.idx, 0, action.y); }
+  } else if (action.type === 'erase' && c) {
+    c.px.splice(action.idx, 0, action.x);
+    c.py.splice(action.idx, 0, action.y);
     showToast('Undid erase');
   }
   updateInfo();
   draw();
+  scheduleGenerate();
 }
 
 // ── Info panel ──
@@ -442,6 +507,75 @@ function updateInfo() {
   if (appState.f1 !== undefined) document.getElementById('infoF1').textContent = appState.f1;
   document.getElementById('infoCal').textContent = appState.has_xcal ? 'OK' : 'Failed';
   document.getElementById('infoCal').style.color = appState.has_xcal ? 'var(--absorption)' : 'var(--emission)';
+  renderChips();
+}
+
+// ── Auto-generated outputs (Excel chart, CSV, XLSX, PhotochemCAD page) ──
+let genTimer = null, genBusy = false, genQueued = false;
+
+function scheduleGenerate() {
+  clearTimeout(genTimer);
+  genTimer = setTimeout(runGenerate, 1200);
+  const res = document.getElementById('results');
+  if (res.classList.contains('show')) {
+    let note = res.querySelector('.gen-note');
+    if (!note) { note = document.createElement('div'); note.className = 'gen-note'; res.prepend(note); }
+    note.textContent = 'Regenerating outputs…';
+  }
+}
+
+async function runGenerate() {
+  if (!appState.has_xcal || !curves.length) return;
+  if (genBusy) { genQueued = true; return; }
+  genBusy = true;
+  try {
+    const payload = {
+      curves: curves.filter(c => c.px.length >= 2).map(c => ({
+        role: c.role, name: c.name || c.role, color: c.color, px: c.px, py: c.py,
+      })),
+      xcal: appState.xcal,
+      frame_orig: appState.frame_orig,
+      scale: appState.scale,
+      molecule: appState.molecule || 'Spectrum',
+      gid: 'SW001',
+    };
+    const resp = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!data.error) renderResults(data);
+  } catch (e) {
+    console.error('generate failed', e);
+  } finally {
+    genBusy = false;
+    if (genQueued) { genQueued = false; scheduleGenerate(); }
+  }
+}
+
+function renderResults(data) {
+  const res = document.getElementById('results');
+  res.innerHTML = '';
+  if (!data.curves || !data.curves.length) { res.classList.remove('show'); return; }
+  for (const c of data.curves) {
+    const card = document.createElement('div');
+    card.className = 'rcard';
+    card.innerHTML = `
+      <div class="rhead">
+        <span class="swatch" style="background:${c.color}"></span>
+        ${c.kind}
+        <span class="meta">peak ${c.peak_wl} nm · ${c.n_points} pts</span>
+      </div>
+      <img src="${c.excel_png}?t=${data.token}" alt="Excel chart" onclick="window.open('${c.excel_png}','_blank')">
+      <div class="rlinks">
+        <a href="${c.csv}" download>⬇ CSV</a>
+        <a href="${c.xlsx}" download>⬇ Excel</a>
+        <a href="${c.pccad}" target="_blank">PhotochemCAD ↗</a>
+      </div>`;
+    res.appendChild(card);
+  }
+  res.classList.add('show');
 }
 
 // ── Export ──

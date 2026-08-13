@@ -51,13 +51,25 @@ Open `http://localhost:8770` in your browser.
 | Action | How |
 |--------|-----|
 | Upload | Drag-and-drop or click "Upload Image" |
-| Add dots | Press `1` or click "Add Dots", then click on the canvas |
-| Erase dots | Press `2` or click "Erase Dots", then click near a dot |
+| Add dots (same curve) | Press `1` or click "Add Same", then click on the canvas |
+| Add a NEW spectrum | Click "+ Add Different" — dots get a fresh color and become their own curve (for pages where a curve is missing or two got merged) |
+| Select curve | Click its colored chip in the toolbar |
+| Erase dots | Press `2` or click "Erase", then click near a dot |
 | Pan | Press `3` or click "Pan", then drag |
 | Zoom | Scroll wheel, or `+` / `-` keys |
 | Switch curve | Press `E` (emission) or `A` (absorption) |
 | Undo | `Ctrl+Z` or click "Undo" |
 | Export | Click "Export CSV" |
+
+### Auto-generated outputs
+
+After every dot change (add / erase / undo) the bottom panel regenerates, **per curve**:
+
+1. an **Excel-style chart image** (click to open full size)
+2. a **CSV download** and a real **Excel workbook** (.xlsx with an embedded scatter chart)
+3. a **PhotochemCAD-style page** — metadata table (name, peak wavelength, solvent, reference) beside an interactive hover-tooltip chart, with its own CSV download link
+
+A page with emission + absorption gets both sets; every "+ Add Different" spectrum gets its own set too.
 
 ## Coverage
 
