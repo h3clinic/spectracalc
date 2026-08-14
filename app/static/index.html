@@ -1003,9 +1003,24 @@ async function saveToLibrary() {
     });
     const d = await resp.json();
     if (d.error) { alert(d.error); return; }
-    showToast(`Saved ${d.saved.join(' + ')} — dataset, overlay & viewer updated`);
+    const bits = ['dataset'];
+    if (d.xlsx) bits.push('Excel workbook');
+    if (d.overlay) bits.push('overlay');
+    if (d.viewers) bits.push(d.viewers > 1 ? 'both viewers' : 'viewer');
+    if (d.cache) bits.push('editor cache');
+    // name anything that did NOT propagate — a silent partial save is how
+    // edits go missing without anyone noticing
+    const missing = [];
+    if (!d.xlsx) missing.push('Excel workbook');
+    if (!d.overlay) missing.push('overlay');
+    if (!d.viewers) missing.push('viewers');
+    if (!d.cache) missing.push('editor cache');
+    if (d.master === 'failed') missing.push('master index');
+    const warn = missing.length ? ` — FAILED: ${missing.join(', ')}` : '';
+    showToast(`Saved ${d.saved.join(' + ')} — ${bits.join(', ')} updated${warn}`);
     document.getElementById('status').textContent =
-      `${appState.molecule} — saved to library (${d.saved.join(', ')})`;
+      `${appState.molecule} — saved to library (${d.saved.join(', ')})${warn}`;
+    if (missing.length) console.warn('save_page partial:', d);
   } catch (e) {
     alert('Save failed: ' + e.message);
   }

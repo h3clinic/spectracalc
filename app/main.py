@@ -5,7 +5,7 @@ pipeline, then fine-tune by adding/erasing dots before exporting.  Every
 edit regenerates, per curve: a CSV, an Excel workbook with a scatter chart,
 an Excel-style chart image, and a PhotochemCAD-style formatted page.
 """
-import io, os, sys, base64, json, csv, tempfile, uuid, re, shutil, time
+import io, os, sys, base64, json, csv, tempfile, uuid, re, shutil, time, threading
 import cv2
 import numpy as np
 from fastapi import FastAPI, UploadFile, File
@@ -171,13 +171,25 @@ async def digitize_page(data: dict):
     payload = _digitize_path(path, img)
     payload["gid"] = gid
 
-    # LRU-ish cache: keep the 40 most recent pages
-    with open(cache_path, "w") as f:
-        json.dump(payload, f)
-    cached = sorted((os.path.join(CACHE, n) for n in os.listdir(CACHE)
+    # LRU-ish cache: keep the 40 most recent pages — but never evict a
+    # hand-edited page (sidecar <gid>.edited marker written on save)
+    _atomic_write(cache_path, json.dumps(payload))
+    names = os.listdir(CACHE)
+    cached = sorted((os.path.join(CACHE, n) for n in names
                      if n.endswith(".json")), key=os.path.getmtime, reverse=True)
     for old in cached[40:]:
+        if os.path.exists(old[:-len(".json")] + ".edited"):
+            continue
         os.unlink(old)
+    # sweep temp files orphaned by an interrupted write
+    for n in names:
+        if ".tmp" in n:
+            p = os.path.join(CACHE, n)
+            try:
+                if time.time() - os.path.getmtime(p) > 3600:
+                    os.unlink(p)
+            except OSError:
+                pass
     return payload
 
 
@@ -256,11 +268,241 @@ async def autotrace(data: dict):
             "n": len(out)}
 
 
+REPO_DIR = os.path.expanduser("~/onepager/SpectraWolf")
+
+
+def _atomic_write(path, text, encoding="utf-8"):
+    """Write-then-rename so a concurrent reader (or a crash mid-write) never
+    sees a torn file — these are multi-MB library files.  A failed write
+    takes its temp file with it instead of leaving multi-MB litter in the
+    repo working tree."""
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding=encoding) as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _library_xlsx(path, gid, entry):
+    """Rewrite the library's per-compound workbook (data/spectra/) in the
+    exact release-zip format: header block, emission + absorption columns,
+    one scatter chart with red/green dot series."""
+    import openpyxl
+    from openpyxl.styles import Font
+    from openpyxl.chart import ScatterChart, Reference, Series
+    from openpyxl.chart.marker import Marker
+    name = entry.get("name", gid)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Spectrum"
+    ws["A1"] = name
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = f"Berlman {gid}"
+    ws["A3"] = f"Digitization F1 = {entry.get('f1', 'N/A')}"
+    ws["A4"] = 'Source: Berlman, "Handbook of Fluorescence Spectra," 2nd Ed., 1971'
+    ws["A4"].font = Font(italic=True, size=9)
+    hdr_row = 6
+    bold = Font(bold=True)
+    em_wl = entry.get("em", {}).get("wl", [])
+    em_int = entry.get("em", {}).get("inten", [])
+    ab_wl = entry.get("ab", {}).get("wl", [])
+    ab_int = entry.get("ab", {}).get("inten", [])
+    col_headers = ["Emission λ (nm)", "Emission Intensity", "",
+                   "Absorption λ (nm)", "Absorption Intensity"]
+    for j, h in enumerate(col_headers):
+        c = ws.cell(row=hdr_row, column=1 + j, value=h)
+        if h:
+            c.font = bold
+    for i, (w, it) in enumerate(zip(em_wl, em_int)):
+        ws.cell(row=hdr_row + 1 + i, column=1, value=w)
+        ws.cell(row=hdr_row + 1 + i, column=2, value=round(it, 6))
+    for i, (w, it) in enumerate(zip(ab_wl, ab_int)):
+        ws.cell(row=hdr_row + 1 + i, column=4, value=w)
+        ws.cell(row=hdr_row + 1 + i, column=5, value=round(it, 6))
+    chart = ScatterChart()
+    chart.title = f"{name}"
+    chart.x_axis.title = "Wavelength (nm)"
+    chart.y_axis.title = "Normalized Intensity"
+    chart.height = 10
+    chart.width = 18
+    chart.x_axis.delete = False
+    chart.y_axis.delete = False
+    for wl_list, col0, hexcol in ((em_wl, 1, "C0392B"), (ab_wl, 4, "1E8F4E")):
+        if len(wl_list) > 1:
+            xref = Reference(ws, min_col=col0, min_row=hdr_row + 1,
+                             max_row=hdr_row + len(wl_list))
+            yref = Reference(ws, min_col=col0 + 1, min_row=hdr_row,
+                             max_row=hdr_row + len(wl_list))
+            ser = Series(yref, xref, title_from_data=True)
+            ser.marker = Marker(symbol="circle", size=2)
+            ser.graphicalProperties.line.noFill = True
+            ser.marker.graphicalProperties.solidFill = hexcol
+            ser.marker.graphicalProperties.line.solidFill = hexcol
+            chart.series.append(ser)
+    ws.add_chart(chart, "G6")
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["D"].width = 20
+    ws.column_dimensions["E"].width = 20
+    # openpyxl truncates the destination the moment it opens the zip, so a
+    # failure mid-save would destroy the existing workbook — build beside it
+    # and swap in only once the new file is complete
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        wb.save(tmp)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _rebuild_master_index():
+    """Rebuild data/Berlman_Master_Index.xlsx (Index + long-format All
+    Emission / All Absorption sheets) from the canonical spectra_all.json.
+    Slow (~a minute) — always run on the background worker thread."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    with open(SPECTRA_JSON_CANDIDATES[0]) as f:
+        raw = json.load(f)
+    spectra, order = raw["spectra"], raw["order"]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Index"
+    hdr_font = Font(bold=True, color="FFFFFF", size=11)
+    hdr_fill = PatternFill("solid", fgColor="1E3B96")
+    headers = ["#", "Graph ID", "Compound", "Emission Peak (nm)",
+               "Absorption Peak (nm)", "F1 Score", "Emission Points",
+               "Absorption Points"]
+    for j, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=j, value=h)
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = Alignment(horizontal="center")
+    for i, gid in enumerate(order, 1):
+        s = spectra[gid]
+        ws.cell(row=i + 1, column=1, value=i)
+        ws.cell(row=i + 1, column=2, value=gid)
+        ws.cell(row=i + 1, column=3, value=s.get("name", ""))
+        ws.cell(row=i + 1, column=4, value=int(s["lam_em"]) if "lam_em" in s else "")
+        ws.cell(row=i + 1, column=5, value=int(s["lam_abs"]) if "lam_abs" in s else "")
+        ws.cell(row=i + 1, column=6, value=float(s["f1"]) if "f1" in s else "")
+        ws.cell(row=i + 1, column=7, value=len(s["em"]["wl"]) if "em" in s else 0)
+        ws.cell(row=i + 1, column=8, value=len(s["ab"]["wl"]) if "ab" in s else 0)
+    for col, wdt in zip("ABCDEFGH", (5, 14, 45, 18, 20, 10, 16, 18)):
+        ws.column_dimensions[col].width = wdt
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:H{len(order) + 1}"
+    for key, title in (("em", "All Emission"), ("ab", "All Absorption")):
+        wsl = wb.create_sheet(title)
+        for j, h in enumerate(["Graph ID", "Compound", "Wavelength (nm)",
+                               "Normalized Intensity"], 1):
+            c = wsl.cell(row=1, column=j, value=h)
+            c.font = hdr_font
+            c.fill = hdr_fill
+        row = 2
+        for gid in order:
+            s = spectra[gid]
+            if key not in s:
+                continue
+            name = s.get("name", "")
+            for w, inten in zip(s[key]["wl"], s[key]["inten"]):
+                wsl.cell(row=row, column=1, value=gid)
+                wsl.cell(row=row, column=2, value=name)
+                wsl.cell(row=row, column=3, value=w)
+                wsl.cell(row=row, column=4, value=round(inten, 6))
+                row += 1
+        wsl.freeze_panes = "A2"
+        for col, wdt in zip("ABCD", (14, 40, 18, 22)):
+            wsl.column_dimensions[col].width = wdt
+    dst = os.path.join(REPO_DIR, "data", "Berlman_Master_Index.xlsx")
+    tmp = f"{dst}.tmp{os.getpid()}"
+    try:
+        wb.save(tmp)
+        os.replace(tmp, dst)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    dl = os.path.expanduser("~/Downloads/Berlman_600dpi_spectra")
+    if os.path.isdir(dl):
+        try:
+            shutil.copy(dst, os.path.join(dl, "Berlman_Master_Index.xlsx"))
+        except Exception:
+            pass
+
+
+_master_lock = threading.Lock()
+_master_running = False
+_master_pending = False
+_master_status = {"state": "idle", "error": None, "finished": None}
+
+
+def _master_worker():
+    global _master_running, _master_pending
+    while True:
+        with _master_lock:
+            if not _master_pending:
+                _master_running = False
+                _master_status["state"] = (
+                    "failed" if _master_status["error"] else "done")
+                return
+            _master_pending = False
+            _master_status["state"] = "running"
+        try:
+            _rebuild_master_index()
+            _master_status["error"] = None
+        except Exception as e:
+            # the rebuild is the one artifact nobody watches — remember why
+            # it failed so /api/master_status can report it
+            _master_status["error"] = f"{type(e).__name__}: {e}"
+        _master_status["finished"] = time.time()
+
+
+def _schedule_master_rebuild():
+    """Queue a master-index rebuild; coalesces rapid saves into one run."""
+    global _master_running, _master_pending
+    with _master_lock:
+        _master_pending = True
+        if _master_running:
+            return "queued"
+        _master_running = True
+    try:
+        threading.Thread(target=_master_worker, daemon=True).start()
+    except Exception as e:
+        # never leave the coalescer wedged: a start() failure would make
+        # every later save skip the rebuild forever
+        with _master_lock:
+            _master_running = False
+            _master_status["error"] = f"thread start failed: {e}"
+            _master_status["state"] = "failed"
+        return "failed"
+    return "rebuilding"
+
+
+@app.get("/api/master_status")
+async def master_status():
+    """Did the background master-index rebuild actually succeed?"""
+    return dict(_master_status)
+
+
 @app.post("/api/save_page")
 async def save_page(data: dict):
     """Write edited curves back into the LIBRARY: canonical spectra_all.json
-    (all copies), the page's CSVs, the round-trip overlay, and the viewer's
-    inlined data — the full fix-and-remake loop in one click."""
+    (all copies), the page's CSVs, the per-compound Excel workbook, the
+    round-trip overlay, the viewers' inlined data (local + repo), the
+    editor's digitize cache, and a background master-index rebuild — the
+    full fix-and-remake loop in one click."""
     gid = re.sub(r"[^A-Za-z0-9\-]", "", data.get("gid") or "")
     xcal = data.get("xcal")
     frame_orig = data.get("frame_orig", {})
@@ -285,9 +527,12 @@ async def save_page(data: dict):
 
     # writable canonical copies first — the server process cannot reach
     # ~/Downloads on macOS (TCC), so that one is best-effort only
-    repo_data = os.path.expanduser("~/onepager/SpectraWolf/data/spectra_all.json")
+    repo_data = os.path.join(REPO_DIR, "data", "spectra_all.json")
     canon = SPECTRA_JSON_CANDIDATES[0]           # app bundle (always writable)
     touched = []
+    failures = []
+    merged_entry = None      # full entry (edited + untouched curves) for the xlsx
+    saved_doc = None         # the updated document, for the viewers below
     for path in [canon, repo_data] + SPECTRA_JSON_CANDIDATES[1:]:
         try:
             with open(path) as f:
@@ -301,11 +546,23 @@ async def save_page(data: dict):
                 elif key == "ab":
                     entry["lam_abs"] = str(int(round(peak_wl)))
             entry["hand_edited"] = True
-            with open(path, "w") as f:
-                json.dump(raw, f)
+            _atomic_write(path, json.dumps(raw))
             touched.append(path)
-        except Exception:
+            if merged_entry is None:
+                merged_entry = entry
+                saved_doc = raw
+        except Exception as e:
+            failures.append(f"{os.path.basename(os.path.dirname(path))}/"
+                            f"{os.path.basename(path)}: {type(e).__name__}")
             continue
+
+    # the edits must reach at least one canonical copy — otherwise every
+    # downstream artifact below would publish pre-edit data under a
+    # "saved" banner, which is worse than failing loudly
+    if not touched:
+        return JSONResponse(
+            {"error": "could not write any library copy — nothing was saved",
+             "detail": failures}, status_code=500)
 
     # per-page CSVs
     csv_dir_map = {"em": ("emission", "emission"), "ab": ("absorption", "absorption")}
@@ -325,6 +582,24 @@ async def save_page(data: dict):
             w.writerow(["wavelength_nm", col])
             for wv, iv in zip(updates[key]["wl"], updates[key]["inten"]):
                 w.writerow([f"{wv:.1f}", f"{iv:.6f}"])
+
+    # per-compound Excel workbook in the repo library (data/spectra/)
+    xlsx_ok = False
+    if merged_entry is not None:
+        try:
+            import glob as _glob
+            xdir = os.path.join(REPO_DIR, "data", "spectra")
+            if os.path.isdir(xdir):
+                safe = re.sub(r"[^A-Za-z0-9]+", "_",
+                              merged_entry.get("name", gid) or "").strip("_")[:34]
+                dst = os.path.join(xdir, f"{safe or 'spectrum'}__{gid}.xlsx")
+                for old in _glob.glob(os.path.join(xdir, f"*__{gid}.xlsx")):
+                    if old != dst:
+                        os.remove(old)
+                _library_xlsx(dst, gid, merged_entry)
+                xlsx_ok = True
+        except Exception:
+            pass
 
     # round-trip overlay for this page
     overlay_ok = False
@@ -355,29 +630,76 @@ async def save_page(data: dict):
     except Exception:
         pass
 
-    # viewer's inlined data
-    viewer_ok = False
-    vp = os.path.expanduser("~/onepager/berlman_photochemcad.html")
+    # viewers' inlined data — the local viewer AND the repo website copy,
+    # so the smooth digitized charts change everywhere after a save
+    viewers_ok = 0
     try:
-        with open(canon) as f:
-            raw = json.load(f)
-        with open(vp, encoding="utf-8") as f:
-            lines = f.readlines()
-        for i, line in enumerate(lines):
-            if line.startswith("const SPECTRA = "):
-                lines[i] = "const SPECTRA = " + json.dumps(
-                    raw["spectra"], separators=(",", ":")) + ";\n"
-            elif line.startswith("const ORDER = "):
-                lines[i] = "const ORDER = " + json.dumps(
-                    raw["order"], separators=(",", ":")) + ";\n"
-        with open(vp, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-        viewer_ok = True
+        # publish the document we just wrote, NOT a fresh disk read — if the
+        # primary copy were unreadable this would silently re-inline
+        # pre-edit data into both websites and call it success
+        sp_line = "const SPECTRA = " + json.dumps(
+            saved_doc["spectra"], separators=(",", ":")) + ";\n"
+        ord_line = "const ORDER = " + json.dumps(
+            saved_doc["order"], separators=(",", ":")) + ";\n"
+        for vp in (os.path.expanduser("~/onepager/berlman_photochemcad.html"),
+                   os.path.join(REPO_DIR, "index.html")):
+            try:
+                with open(vp, encoding="utf-8") as f:
+                    lines = f.readlines()
+                for i, line in enumerate(lines):
+                    if line.startswith("const SPECTRA = "):
+                        lines[i] = sp_line
+                    elif line.startswith("const ORDER = "):
+                        lines[i] = ord_line
+                _atomic_write(vp, "".join(lines))
+                viewers_ok += 1
+            except Exception:
+                continue
     except Exception:
         pass
 
+    # refresh the editor's digitize cache so reopening this page shows the
+    # edited dots, not the original machine digitization
+    cache_ok = False
+    try:
+        cpath = os.path.join(CACHE, gid + ".json")
+        if os.path.exists(cpath):
+            with open(cpath) as f:
+                centry = json.load(f)
+            by_role = {c.get("role"): c for c in centry.get("curves", [])}
+            for c in data.get("curves", []):
+                role = c.get("role")
+                if role not in ("emission", "absorption", "emission2"):
+                    continue
+                # 4-dp precision: 2-dp original-coord rounding accumulates
+                # visible bin drift over repeated load->save cycles
+                pxs = [round(float(x) / (scale or 1.0), 4) for x in c.get("px", [])]
+                pys = [round(float(y) / (scale or 1.0), 4) for y in c.get("py", [])]
+                if len(pxs) < 5:
+                    continue
+                if role in by_role:
+                    by_role[role]["px"] = pxs
+                    by_role[role]["py"] = pys
+                else:
+                    cur = {"role": role, "px": pxs, "py": pys}
+                    centry.setdefault("curves", []).append(cur)
+                    by_role[role] = cur
+            centry["hand_edited"] = True
+            _atomic_write(cpath, json.dumps(centry))
+            # sidecar marker: the LRU eviction never drops hand-edited pages
+            with open(os.path.join(CACHE, gid + ".edited"), "w") as f:
+                f.write("1")
+            cache_ok = True
+    except Exception:
+        pass
+
+    master = _schedule_master_rebuild()
+
     return {"saved": sorted(updates.keys()), "json_copies": len(touched),
-            "overlay": overlay_ok, "viewer": viewer_ok}
+            "canonical": os.path.basename(os.path.dirname(touched[0])) or "app",
+            "failed_copies": failures,
+            "xlsx": xlsx_ok, "overlay": overlay_ok, "viewers": viewers_ok,
+            "cache": cache_ok, "master": master}
 
 
 @app.post("/api/export")
