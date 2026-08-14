@@ -132,8 +132,52 @@ body.browsing .slide-cta { display:flex; }
   font-size:13px; color:var(--text);
 }
 body.browsing .slide-title { display:block; }
+body.browsing .toolrail { display:none; }
 .slide-title b { color:var(--accent); }
 #libSearch { height:34px; padding:0 10px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; width:150px; }
+
+/* ── Paint-style tool rail ── */
+.toolrail {
+  width:84px; background:var(--surface); border-right:1px solid var(--border);
+  display:flex; flex-direction:column; align-items:center; padding:10px 6px; gap:10px;
+  flex-shrink:0; overflow-y:auto;
+}
+.toolrail .rail-label { font-size:9.5px; color:var(--text2); text-transform:uppercase; letter-spacing:.6px; }
+.toolgrid { display:grid; grid-template-columns:34px 34px; gap:4px; }
+.tool {
+  width:34px; height:34px; border:1px solid var(--border); border-radius:6px;
+  background:var(--surface2); color:var(--text); font-size:15px; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; transition:all .12s;
+}
+.tool:hover { background:var(--border); }
+.tool.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+.sizegrid { display:flex; gap:5px; }
+.sizebtn {
+  width:22px; height:22px; border:1px solid var(--border); border-radius:4px;
+  background:var(--surface2); cursor:pointer; display:flex; align-items:center; justify-content:center;
+}
+.sizebtn.active { border-color:var(--emission); }
+.sizebtn i { display:block; border-radius:50%; background:var(--text2); }
+.swatchgrid { display:grid; grid-template-columns:26px 26px; gap:5px; }
+.swatch-sq {
+  width:26px; height:26px; border:2px solid var(--border); border-radius:4px; cursor:pointer;
+  position:relative; transition:transform .1s;
+}
+.swatch-sq.active { border-color:#fff; transform:scale(1.12); box-shadow:0 0 0 1px var(--border); }
+.swatch-sq .cnt {
+  position:absolute; bottom:-4px; right:-4px; background:var(--surface); color:var(--text2);
+  border:1px solid var(--border); border-radius:6px; font-size:8px; padding:0 3px; line-height:11px;
+}
+.swatch-sq.newsw { display:flex; align-items:center; justify-content:center; color:var(--text2); font-size:15px; background:var(--surface2); }
+.activebox { width:56px; text-align:center; font-size:10px; color:var(--text2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* ── Status bar ── */
+.statusbar {
+  height:24px; background:var(--surface); border-top:1px solid var(--border);
+  display:flex; align-items:center; gap:18px; padding:0 12px; font-size:11.5px;
+  color:var(--text2); flex-shrink:0; white-space:nowrap; overflow:hidden;
+}
+.statusbar b { color:var(--text); font-weight:500; }
 
 /* ── Curve chips ── */
 .chip {
@@ -185,22 +229,6 @@ body.browsing .slide-title { display:block; }
     <datalist id="libList"></datalist>
     <button class="btn" onclick="toggleFullscreen()" title="Fullscreen (F)">⛶</button>
   </div>
-  <div class="tgroup seg">
-    <button class="btn mode-btn" id="btnAdd" onclick="setMode('add')" title="Add dots to the selected curve (1)">＋ Add</button>
-    <button class="btn mode-btn" id="btnAuto" onclick="setMode('auto')" title="Guided trace: click a few dots along missed ink — the program follows the ink between them (4)">⚡ Auto</button>
-    <button class="btn mode-btn" id="btnErase" onclick="setMode('erase')" title="Drag to erase (2)">⌫ Erase</button>
-    <button class="btn mode-btn" id="btnPan" onclick="setMode('pan')" title="Pan (3)">✋ Pan</button>
-  </div>
-  <div class="tgroup">
-    <span id="curveChips" style="display:flex;gap:4px;align-items:center"></span>
-    <button class="btn" id="btnNewCurve" onclick="addNewCurve()" title="New spectrum in a fresh color — for merged or missing curves">＋ New</button>
-  </div>
-  <div class="tgroup">
-    <button class="btn" onclick="undoAction()" title="Undo (Ctrl+Z)">↩</button>
-    <button class="btn" onclick="zoomOut()" title="Zoom out">−</button>
-    <button class="btn" onclick="zoomIn()" title="Zoom in">＋</button>
-    <button class="btn" onclick="zoomFit()" title="Fit (0)">Fit</button>
-  </div>
   <div class="tgroup" style="border-right:none">
     <button class="btn btn-primary" onclick="exportCSV()" title="Download CSV">⬇ CSV</button>
     <button class="btn" id="btnSave" onclick="saveToLibrary()" style="display:none;background:#1e8f4e;border-color:#1e8f4e;color:#fff" title="Write edits into the dataset, overlay & viewer">💾 Save</button>
@@ -209,6 +237,28 @@ body.browsing .slide-title { display:block; }
 </div>
 
 <div class="main">
+  <div class="toolrail" id="toolrail">
+    <div class="rail-label">Tools</div>
+    <div class="toolgrid">
+      <button class="tool mode-btn" id="btnAdd" onclick="setMode('add')" title="Add dots to the selected curve (1)">＋</button>
+      <button class="tool mode-btn" id="btnAuto" onclick="setMode('auto')" title="Guided trace: click a few dots along missed ink — the program follows the ink between them (4)">⚡</button>
+      <button class="tool mode-btn" id="btnErase" onclick="setMode('erase')" title="Eraser — swipe across dots; ≥50% covered is gone (2)">⌫</button>
+      <button class="tool mode-btn" id="btnPan" onclick="setMode('pan')" title="Pan (3)">✋</button>
+      <button class="tool" onclick="undoAction()" title="Undo (Ctrl+Z)">↩</button>
+      <button class="tool" onclick="zoomFit()" title="Fit to window (0)">⤢</button>
+      <button class="tool" onclick="zoomOut()" title="Zoom out (−)">⊖</button>
+      <button class="tool" onclick="zoomIn()" title="Zoom in (+)">⊕</button>
+    </div>
+    <div class="rail-label">Size</div>
+    <div class="sizegrid" id="sizeGrid">
+      <button class="sizebtn" data-r="12" title="Small brush — 12 px"><i style="width:5px;height:5px"></i></button>
+      <button class="sizebtn active" data-r="26" title="Medium brush — 26 px"><i style="width:9px;height:9px"></i></button>
+      <button class="sizebtn" data-r="48" title="Large brush — 48 px"><i style="width:14px;height:14px"></i></button>
+    </div>
+    <div class="rail-label">Colors</div>
+    <div class="swatchgrid" id="curveChips"></div>
+    <div class="activebox" id="activeCurveName" title="Curve being edited">—</div>
+  </div>
   <div class="canvas-wrap" id="canvasWrap">
     <canvas id="editor"></canvas>
     <button class="slide-nav prev" onclick="slide(-1)" title="Previous (←)">◀</button>
@@ -257,7 +307,7 @@ body.browsing .slide-title { display:block; }
       <b>⚡ Auto:</b> click a few dots along missed ink — the program traces the actual ink between them (deterministic, no AI); Esc restarts the chain<br>
       <b>⌫ Erase:</b> swipe the brush across dots — anything ≥50% covered along the path is gone; resize with [ and ]<br>
       <b>＋ New:</b> start a NEW spectrum in a fresh color (for merged or missing curves)<br>
-      <b>Chips:</b> click a colored chip to select which curve you're editing<br>
+      <b>Colors:</b> click a swatch in the left rail to select which curve you're editing<br>
       <b>Pan / Scroll:</b> drag to move, scroll to zoom<br>
       <b>Ctrl+Z:</b> undo · <b>E / A:</b> emission / absorption · <b>1 / 2 / 3 / 4:</b> add / erase / pan / auto<br><br>
       After any dot change the bottom panel regenerates each curve's <b>Excel chart</b>, <b>CSV + Excel downloads</b>, and <b>PhotochemCAD-style page</b>.
@@ -266,6 +316,13 @@ body.browsing .slide-title { display:block; }
 </div>
 
 <div id="results"></div>
+
+<div class="statusbar">
+  <span>Mode: <b id="sbMode">Pan</b></span>
+  <span id="sbPos"></span>
+  <span>Zoom: <b id="sbZoom">100%</b></span>
+  <span style="margin-left:auto">1 Add · 2 Erase · 3 Pan · 4 Auto · [ ] brush size · Ctrl+Z undo · 0 fit</span>
+</div>
 
 <div class="toast" id="toast"></div>
 
@@ -299,6 +356,8 @@ function setMode(m) {
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
   document.getElementById({add:'btnAdd',auto:'btnAuto',erase:'btnErase',pan:'btnPan'}[m]).classList.add('active');
   wrap.style.cursor = m === 'pan' ? 'grab' : m === 'erase' ? 'none' : 'crosshair';
+  const sb = document.getElementById('sbMode');
+  if (sb) sb.textContent = { add: 'Add dots', auto: 'Auto trace', erase: 'Eraser', pan: 'Pan' }[m] || m;
   draw();
 }
 
@@ -378,13 +437,52 @@ function renderChips() {
   const box = document.getElementById('curveChips');
   box.innerHTML = '';
   curves.forEach((c, i) => {
-    const chip = document.createElement('button');
-    chip.className = 'chip' + (i === activeIdx ? ' active' : '');
-    chip.style.setProperty('--chip-c', c.color);
-    chip.innerHTML = `<span class="swatch" style="background:${c.color}"></span>${c.name || c.role} <span style="color:var(--text2)">${c.px.length}</span>`;
-    chip.onclick = () => setActiveCurve(i);
-    box.appendChild(chip);
+    const sw = document.createElement('button');
+    sw.className = 'swatch-sq' + (i === activeIdx ? ' active' : '');
+    sw.style.background = c.color;
+    sw.title = `${c.name || c.role} — ${c.px.length} pts`;
+    sw.innerHTML = `<span class="cnt">${c.px.length}</span>`;
+    sw.onclick = () => setActiveCurve(i);
+    box.appendChild(sw);
   });
+  const plus = document.createElement('button');
+  plus.className = 'swatch-sq newsw';
+  plus.title = 'New spectrum in a fresh color — for merged or missing curves';
+  plus.textContent = '＋';
+  plus.onclick = addNewCurve;
+  box.appendChild(plus);
+  const nb = document.getElementById('activeCurveName');
+  if (nb) nb.textContent = curves[activeIdx] ? (curves[activeIdx].name || curves[activeIdx].role) : '—';
+}
+
+// ── Paint-rail brush-size presets ──
+function syncSizeGrid() {
+  let best = null, bd = 1e9;
+  document.querySelectorAll('#sizeGrid .sizebtn').forEach(b => {
+    b.classList.remove('active');
+    const d = Math.abs(+b.dataset.r - ERASE_R);
+    if (d < bd) { bd = d; best = b; }
+  });
+  if (best) best.classList.add('active');
+}
+document.querySelectorAll('#sizeGrid .sizebtn').forEach(b => {
+  b.onclick = () => { ERASE_R = +b.dataset.r; syncSizeGrid(); setMode('erase'); };
+});
+
+// ── Status-bar cursor readout: image px -> physical λ / intensity ──
+function updateStatusbar(sx, sy) {
+  const el = document.getElementById('sbPos');
+  if (!el) return;
+  if (!img || sx == null) { el.textContent = ''; return; }
+  const [ix, iy] = screenToImg(sx, sy);
+  let txt = `x ${Math.round(ix)}, y ${Math.round(iy)} px`;
+  const xc = appState.xcal, fr = appState.frame_orig, sc = appState.scale || 1;
+  if (xc && fr) {
+    const wn = xc.a * (ix / sc) + xc.b;
+    const inten = (fr.y_bottom - iy / sc) / ((fr.y_bottom - fr.y_top) || 1);
+    if (wn > 0) txt = `λ ${(1e7 / wn).toFixed(1)} nm · ${Math.round(wn)} cm⁻¹ · I ${inten.toFixed(3)}`;
+  }
+  el.textContent = txt;
 }
 
 // ── File handling ──
@@ -460,6 +558,8 @@ window.addEventListener('resize', resizeCanvas);
 function draw() {
   if (!ctx) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const sz = document.getElementById('sbZoom');
+  if (sz) sz.textContent = isFinite(zoom) && zoom > 0 ? Math.round(zoom * 100) + '%' : '—';
   if (!img) return;
 
   ctx.save();
@@ -593,6 +693,7 @@ canvas.addEventListener('mousemove', e => {
   const rect = canvas.getBoundingClientRect();
   const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
   lastMouse = [sx, sy];
+  updateStatusbar(sx, sy);
   if (isErasing) {
     const [ix, iy] = screenToImg(sx, sy);
     eraseStroke(ix, iy);
@@ -633,8 +734,8 @@ document.addEventListener('keydown', e => {
   else if (e.key === '2') setMode('erase');
   else if (e.key === '3') setMode('pan');
   else if (e.key === '4') setMode('auto');
-  else if (e.key === '[' && mode === 'erase') { ERASE_R = Math.max(8, ERASE_R - 6); draw(); }
-  else if (e.key === ']' && mode === 'erase') { ERASE_R = Math.min(80, ERASE_R + 6); draw(); }
+  else if (e.key === '[' && mode === 'erase') { ERASE_R = Math.max(8, ERASE_R - 6); syncSizeGrid(); draw(); }
+  else if (e.key === ']' && mode === 'erase') { ERASE_R = Math.min(80, ERASE_R + 6); syncSizeGrid(); draw(); }
   else if (e.key === 'Escape' && mode === 'auto' && waypoints.length) { waypoints = []; draw(); }
   else if (e.key === 'e' || e.key === 'E') setRole('emission');
   else if (e.key === 'a' || e.key === 'A') setRole('absorption');
