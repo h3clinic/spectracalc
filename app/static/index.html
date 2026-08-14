@@ -255,7 +255,7 @@ body.browsing .slide-title { display:block; }
     <div style="font-size:12px; color:var(--text2); line-height:1.6">
       <b>＋ Add:</b> click to place dots on the selected curve<br>
       <b>⚡ Auto:</b> click a few dots along missed ink — the program traces the actual ink between them (deterministic, no AI); Esc restarts the chain<br>
-      <b>⌫ Erase:</b> drag a wide brush over dots to remove them<br>
+      <b>⌫ Erase:</b> swipe the brush across dots — anything ≥50% covered along the path is gone; resize with [ and ]<br>
       <b>＋ New:</b> start a NEW spectrum in a fresh color (for merged or missing curves)<br>
       <b>Chips:</b> click a colored chip to select which curve you're editing<br>
       <b>Pan / Scroll:</b> drag to move, scroll to zoom<br>
@@ -290,8 +290,8 @@ let newCurveCounter = 0;
 
 // ── Mode / active curve ──
 let waypoints = [];        // auto-trace guide dots
-let isErasing = false, eraseBatch = null, lastMouse = null;
-const ERASE_R = 16;        // screen-px brush radius — wide & drag-capable
+let isErasing = false, eraseBatch = null, lastMouse = null, lastErase = null;
+let ERASE_R = 26;          // screen-px brush radius — resize with [ and ]
 
 function setMode(m) {
   mode = m;
@@ -302,20 +302,35 @@ function setMode(m) {
   draw();
 }
 
-function eraseAt(ix, iy) {
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function eraseStroke(ix, iy) {
+  // capsule sweep: everything along the path since the last sample is
+  // erased, so a fast swipe leaves no survivors.  A dot goes when its
+  // centre is inside the brush — i.e. more than half of it is covered.
   const r = ERASE_R / zoom;
+  const [ax, ay] = lastErase || [ix, iy];
   let removed = 0;
   for (let ci = 0; ci < curves.length; ci++) {
     const c = curves[ci];
     for (let i = c.px.length - 1; i >= 0; i--) {
-      if (Math.hypot(c.px[i] - ix, c.py[i] - iy) <= r) {
+      if (distToSegment(c.px[i], c.py[i], ax, ay, ix, iy) <= r) {
         eraseBatch.pts.push([ci, c.px[i], c.py[i]]);
         c.px.splice(i, 1); c.py.splice(i, 1);
         removed++;
       }
     }
   }
-  if (removed) { updateInfo(); draw(); }
+  lastErase = [ix, iy];
+  if (removed) { updateInfo(); }
+  draw();
   return removed;
 }
 
@@ -492,10 +507,15 @@ function draw() {
   // eraser brush ring (screen space)
   if (mode === 'erase' && lastMouse) {
     ctx.strokeStyle = 'rgba(231,76,60,.9)';
+    ctx.fillStyle = 'rgba(231,76,60,.12)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.arc(lastMouse[0], lastMouse[1], ERASE_R, 0, Math.PI * 2);
+    ctx.fill();
     ctx.stroke();
+    ctx.fillStyle = 'rgba(231,76,60,.9)';
+    ctx.font = '11px system-ui';
+    ctx.fillText('⌫ ' + ERASE_R + 'px  ([ ] resize)', lastMouse[0] + ERASE_R + 6, lastMouse[1] + 4);
   }
 }
 
@@ -564,7 +584,8 @@ canvas.addEventListener('mousedown', e => {
   if (mode === 'erase') {
     isErasing = true;
     eraseBatch = { type: 'eraseBatch', pts: [] };
-    eraseAt(ix, iy);
+    lastErase = null;
+    eraseStroke(ix, iy);
   }
 });
 
@@ -574,7 +595,7 @@ canvas.addEventListener('mousemove', e => {
   lastMouse = [sx, sy];
   if (isErasing) {
     const [ix, iy] = screenToImg(sx, sy);
-    eraseAt(ix, iy);
+    eraseStroke(ix, iy);
     return;
   }
   if (mode === 'erase') { draw(); }   // move the brush ring
@@ -587,6 +608,7 @@ canvas.addEventListener('mousemove', e => {
 canvas.addEventListener('mouseup', () => {
   if (isErasing) {
     isErasing = false;
+    lastErase = null;
     if (eraseBatch && eraseBatch.pts.length) {
       undoStack.push(eraseBatch);
       showToast(`Erased ${eraseBatch.pts.length} points`);
@@ -611,6 +633,8 @@ document.addEventListener('keydown', e => {
   else if (e.key === '2') setMode('erase');
   else if (e.key === '3') setMode('pan');
   else if (e.key === '4') setMode('auto');
+  else if (e.key === '[' && mode === 'erase') { ERASE_R = Math.max(8, ERASE_R - 6); draw(); }
+  else if (e.key === ']' && mode === 'erase') { ERASE_R = Math.min(80, ERASE_R + 6); draw(); }
   else if (e.key === 'Escape' && mode === 'auto' && waypoints.length) { waypoints = []; draw(); }
   else if (e.key === 'e' || e.key === 'E') setRole('emission');
   else if (e.key === 'a' || e.key === 'A') setRole('absorption');
