@@ -566,7 +566,9 @@ function draw() {{
   const Y = v => T + (1 - (v - y0) / (y1 - y0)) * (H - T - Bm);
   g.clearRect(0,0,W,H);
   g.strokeStyle = '#e3e6ea'; g.lineWidth = 1; g.beginPath();
-  const xt = niceTicks(x0, x1, 9), yt = Array.from({length: 11}, (_, i) => i / 10).filter(v => v <= y1);
+  const xStep = (x1 - x0) > 180 ? 20 : 10;
+  const xt = []; for (let t = Math.ceil(x0 / xStep) * xStep; t <= x1; t += xStep) xt.push(t);
+  const yt = Array.from({{length: 11}}, (_, i) => i / 10).filter(v => v <= y1);
   g.font = '12px Arial'; g.fillStyle = '#495057';
   for (const t of xt) {{ g.moveTo(X(t), T); g.lineTo(X(t), H - Bm);
     g.textAlign='center'; g.fillText(t, X(t), H - Bm + 18); }}
