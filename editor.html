@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpectraWolf Editor — Berlman Spectra</title>
+<style>
+  :root {
+    --pcc-navy: #1E3B96; --pcc-gold: #EFC047;
+    --bg: #111318; --surface: #1a1d24; --surface2: #22262e;
+    --border: #333840; --text: #e4e6ea; --text2: #8b919a;
+    --accent: #4a8fe7; --emission: #C0392B; --absorption: #1E8F4E;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); height: 100vh; width: 100vw;
+    display: flex; flex-direction: column; overflow: hidden;
+    font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  /* header — matches the viewer's PhotochemCAD chrome */
+  .top {
+    background: var(--pcc-navy); border-bottom: 3px solid var(--pcc-gold);
+    display: flex; align-items: center; gap: 14px; padding: 0 14px;
+    height: 50px; flex-shrink: 0;
+  }
+  .top h1 { font-size: 15px; font-weight: 600; color: #fff; white-space: nowrap; }
+  .top h1 span { color: var(--pcc-gold); }
+  .top .cmp { font-size: 13px; color: #cdd6e8; white-space: nowrap;
+              overflow: hidden; text-overflow: ellipsis; }
+  .top .sp { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .btn {
+    height: 30px; padding: 0 11px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface2); color: var(--text); font-size: 12.5px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+    text-decoration: none; transition: background .15s;
+  }
+  .btn:hover { background: var(--border); }
+  .btn-go { background: var(--absorption); border-color: var(--absorption); color: #fff; }
+  .btn-alt { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .main { display: flex; flex: 1; min-height: 0; }
+
+  /* Paint-style tool rail */
+  .rail {
+    width: 84px; background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 10px 6px; gap: 10px; flex-shrink: 0; overflow-y: auto;
+  }
+  .rail .lbl { font-size: 9.5px; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; }
+  .tools { display: grid; grid-template-columns: 34px 34px; gap: 4px; }
+  .tool {
+    width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface2); color: var(--text); font-size: 15px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .tool:hover { background: var(--border); }
+  .tool.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .sizes { display: flex; gap: 5px; }
+  .size {
+    width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface2); cursor: pointer; display: flex;
+    align-items: center; justify-content: center;
+  }
+  .size.on { border-color: var(--emission); }
+  .size i { display: block; border-radius: 50%; background: var(--text2); }
+  .swatches { display: grid; grid-template-columns: 26px 26px; gap: 5px; }
+  .sw {
+    width: 26px; height: 26px; border: 2px solid var(--border); border-radius: 4px;
+    cursor: pointer; position: relative;
+  }
+  .sw.on { border-color: #fff; transform: scale(1.12); }
+  .sw .n {
+    position: absolute; bottom: -4px; right: -4px; background: var(--surface);
+    color: var(--text2); border: 1px solid var(--border); border-radius: 6px;
+    font-size: 8px; padding: 0 3px; line-height: 11px;
+  }
+  .active-name { width: 56px; text-align: center; font-size: 10px; color: var(--text2);
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .canvas-wrap { flex: 1; position: relative; overflow: hidden; background: #0a0b0e; cursor: crosshair; }
+  canvas#ed { position: absolute; top: 0; left: 0; }
+
+  .side {
+    width: 300px; background: var(--surface); border-left: 1px solid var(--border);
+    overflow-y: auto; padding: 14px; flex-shrink: 0;
+  }
+  .side h3 {
+    font-size: 12px; font-weight: 600; margin: 16px 0 8px; color: var(--text2);
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .side h3:first-child { margin-top: 0; }
+  .chart-card { background: #fff; border-radius: 8px; padding: 6px; margin-bottom: 8px; }
+  .chart-card canvas { display: block; width: 100%; height: 132px; }
+  .stat { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
+  .stat b { font-variant-numeric: tabular-nums; }
+  .dl { display: flex; flex-direction: column; gap: 6px; }
+  .note { font-size: 11.5px; color: var(--text2); line-height: 1.55; }
+  .warn {
+    background: #2a2010; border: 1px solid #5c4415; color: #e8c877;
+    border-radius: 6px; padding: 8px 10px; font-size: 11.5px; line-height: 1.5;
+  }
+
+  .status {
+    height: 24px; background: var(--surface); border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 18px; padding: 0 12px;
+    font-size: 11.5px; color: var(--text2); flex-shrink: 0; white-space: nowrap; overflow: hidden;
+  }
+  .status b { color: var(--text); font-weight: 500; }
+  .toast {
+    position: fixed; bottom: 42px; left: 50%; transform: translateX(-50%) translateY(10px);
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 16px; font-size: 13px; opacity: 0; pointer-events: none;
+    transition: all .2s; z-index: 50;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .loading { position: absolute; inset: 0; display: flex; align-items: center;
+             justify-content: center; color: var(--text2); font-size: 14px; }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <h1><span>Spectra</span>Wolf Editor</h1>
+  <div class="cmp" id="cmpName">loading…</div>
+  <div class="sp">
+    <select id="pick" class="btn" style="max-width:230px"></select>
+    <a class="btn" href="/" id="backLink">← Viewer</a>
+  </div>
+</div>
+
+<div class="main">
+  <div class="rail">
+    <div class="lbl">Tools</div>
+    <div class="tools">
+      <button class="tool" id="tAdd"   title="Add dots to the selected curve (1)">＋</button>
+      <button class="tool" id="tErase" title="Eraser — swipe across dots (2)">⌫</button>
+      <button class="tool" id="tPan"   title="Pan (3)">✋</button>
+      <button class="tool" id="tUndo"  title="Undo (Ctrl+Z)">↩</button>
+      <button class="tool" id="tFit"   title="Fit to window (0)">⤢</button>
+      <button class="tool" id="tOut"   title="Zoom out (−)">⊖</button>
+      <button class="tool" id="tIn"    title="Zoom in (+)">⊕</button>
+      <button class="tool" id="tReset" title="Discard edits, reload published data">⟲</button>
+    </div>
+    <div class="lbl">Size</div>
+    <div class="sizes" id="sizes">
+      <button class="size" data-r="12" title="Small brush"><i style="width:5px;height:5px"></i></button>
+      <button class="size on" data-r="26" title="Medium brush"><i style="width:9px;height:9px"></i></button>
+      <button class="size" data-r="48" title="Large brush"><i style="width:14px;height:14px"></i></button>
+    </div>
+    <div class="lbl">Colors</div>
+    <div class="swatches" id="swatches"></div>
+    <div class="active-name" id="activeName">—</div>
+  </div>
+
+  <div class="canvas-wrap" id="wrap">
+    <canvas id="ed"></canvas>
+    <div class="loading" id="loading">Loading scan…</div>
+  </div>
+
+  <div class="side">
+    <h3>Emission</h3>
+    <div class="chart-card"><canvas id="emChart" height="150"></canvas></div>
+    <div class="stat"><span>Peak</span><b id="emPeak">—</b></div>
+    <div class="stat"><span>Points</span><b id="emN">—</b></div>
+
+    <h3>Absorption</h3>
+    <div class="chart-card"><canvas id="abChart" height="150"></canvas></div>
+    <div class="stat"><span>Peak</span><b id="abPeak">—</b></div>
+    <div class="stat"><span>Points</span><b id="abN">—</b></div>
+
+    <h3>Download</h3>
+    <div class="dl">
+      <button class="btn btn-go" id="dlCsv">⬇ CSV (current edits)</button>
+      <button class="btn btn-go" id="dlXlsx">⬇ Excel .xlsx (current edits)</button>
+      <a class="btn" id="dlOrigXlsx" download>⬇ Published Excel (with chart)</a>
+      <a class="btn" id="dlOrigCsv" download>⬇ Published CSV</a>
+      <a class="btn btn-alt" href="downloads/Berlman_Master_Index.xlsx" download>⬇ Master index — all 308</a>
+    </div>
+
+    <h3>How this works</h3>
+    <p class="note">
+      Dots are rebuilt from the published 0.1 nm data pushed back through this
+      page's frozen calibration, so they land on the printed ink exactly as the
+      round-trip validation shows. Edit them and the charts and downloads update
+      live.
+    </p>
+    <div class="warn" id="localNote">
+      Edits live in this browser tab only — this is a static site, so there is
+      no Save&nbsp;to&nbsp;Library and no auto-trace. Download your corrected
+      CSV/Excel, or run the full editor locally for the ink-following
+      auto-trace and writing back to the dataset.
+    </div>
+  </div>
+</div>
+
+<div class="status">
+  <span>Mode: <b id="sbMode">Pan</b></span>
+  <span id="sbPos"></span>
+  <span>Zoom: <b id="sbZoom">—</b></span>
+  <span style="margin-left:auto">1 Add · 2 Erase · 3 Pan · [ ] brush · Ctrl+Z undo · 0 fit</span>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="editor.js"></script>
+</body>
+</html>
