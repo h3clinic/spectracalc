@@ -1270,9 +1270,12 @@ def _role_hygiene(fr, curves):
             return float(np.median(py[lo:hi]))
         return px, py, at
 
-    win = 12
     far = _s(10)
-    for cur, other in ((em, ab), (ab, em)):
+    # two passes with a wide window: a contaminated cluster larger than a
+    # small window dominates its own local median and hides — the wide
+    # window outvotes it, and the second pass cleans what the first exposed
+    for win in (30, 30):
+      for cur, other in ((em, ab), (ab, em)):
         cpx = np.asarray(cur["px"], float)
         cpy = np.asarray(cur["py"], float)
         opx, _, other_at = local_median_model(other, win)
