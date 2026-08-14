@@ -402,7 +402,7 @@ def _curve_physical(c, xcal, frame_orig, scale):
     return np.asarray(owl), np.asarray(ov)
 
 
-def _excel_chart_png(path, wl, inten, title, color):
+def _excel_chart_png(path, wl, inten, title, color, domain=None):
     """Chart image styled like the Excel scatter charts in the workbooks."""
     import matplotlib
     matplotlib.use("Agg")
@@ -416,6 +416,8 @@ def _excel_chart_png(path, wl, inten, title, color):
     ax.set_ylabel("Normalized Intensity", fontsize=9)
     ax.set_yticks(np.arange(0, 1.05, 0.1))
     ax.set_ylim(-0.02, 1.05)
+    if domain:
+        ax.set_xlim(min(domain), max(domain))
     ax.grid(True, color="#D9D9D9", lw=0.7)
     for s in ax.spines.values():
         s.set_color("#BFBFBF")
@@ -557,7 +559,8 @@ function draw() {{
   const g = cv.getContext('2d'); g.scale(devicePixelRatio, devicePixelRatio);
   const W = r.width, H = 430, L = 62, Rt = 14, T = 16, Bm = 46;
   const xs = P.map(p=>p[0]), ys = P.map(p=>p[1]);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const DOM = {meta.get('domain') or 'null'};
+  const x0 = DOM ? DOM[0] : Math.min(...xs), x1 = DOM ? DOM[1] : Math.max(...xs);
   const y1 = Math.max(...ys) * 1.06, y0 = 0;
   const X = w => L + (w - x0) / (x1 - x0) * (W - L - Rt);
   const Y = v => T + (1 - (v - y0) / (y1 - y0)) * (H - T - Bm);
@@ -662,14 +665,16 @@ async def generate(data: dict):
                 w.writerow([f"{wv:.1f}", f"{iv:.6f}"])
 
         title = f"{molecule} — {kind}"
+        lo_wn, hi_wn = sorted([xcal["lo"], xcal["hi"]])
+        nm_domain = [round(1e7 / hi_wn, 1), round(1e7 / lo_wn, 1)]
         png_path = os.path.join(outdir, base + "_excel.png")
-        _excel_chart_png(png_path, wl, inten, title, color)
+        _excel_chart_png(png_path, wl, inten, title, color, domain=nm_domain)
         xlsx_path = os.path.join(outdir, base + ".xlsx")
         _curve_xlsx(xlsx_path, wl, inten, title, color)
         pccad_path = os.path.join(outdir, base + "_photochemcad.html")
         _pccad_html(pccad_path, wl, inten,
                     {"molecule": molecule, "kind": kind, "gid": gid,
-                     "color": color,
+                     "color": color, "domain": nm_domain,
                      "ylabel": "Molar Extinction (norm.)" if c.get("role") == "absorption"
                                else "Photon Intensity (arb.)"},
                     base + ".csv")
