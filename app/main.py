@@ -414,6 +414,8 @@ def _excel_chart_png(path, wl, inten, title, color):
     ax.set_title(title, fontsize=11, pad=10)
     ax.set_xlabel("Wavelength (nm)", fontsize=9)
     ax.set_ylabel("Normalized Intensity", fontsize=9)
+    ax.set_yticks(np.arange(0, 1.05, 0.1))
+    ax.set_ylim(-0.02, 1.05)
     ax.grid(True, color="#D9D9D9", lw=0.7)
     for s in ax.spines.values():
         s.set_color("#BFBFBF")
@@ -561,7 +563,7 @@ function draw() {{
   const Y = v => T + (1 - (v - y0) / (y1 - y0)) * (H - T - Bm);
   g.clearRect(0,0,W,H);
   g.strokeStyle = '#e3e6ea'; g.lineWidth = 1; g.beginPath();
-  const xt = niceTicks(x0, x1, 9), yt = niceTicks(y0, y1, 6);
+  const xt = niceTicks(x0, x1, 9), yt = Array.from({length: 11}, (_, i) => i / 10).filter(v => v <= y1);
   g.font = '12px Arial'; g.fillStyle = '#495057';
   for (const t of xt) {{ g.moveTo(X(t), T); g.lineTo(X(t), H - Bm);
     g.textAlign='center'; g.fillText(t, X(t), H - Bm + 18); }}
