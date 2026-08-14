@@ -19,10 +19,18 @@ body { background:var(--bg); color:var(--text); font-family:'Inter','SF Pro',sys
 .toolbar h1 { font-size:14px; font-weight:600; margin-right:8px; white-space:nowrap; }
 .toolbar h1 span { color:var(--accent); }
 .btn {
-  height:34px; padding:0 14px; border:1px solid var(--border); border-radius:6px;
-  background:var(--surface2); color:var(--text); font-size:13px; cursor:pointer;
-  display:flex; align-items:center; gap:6px; white-space:nowrap; transition:all .15s;
+  height:30px; padding:0 10px; border:1px solid var(--border); border-radius:6px;
+  background:var(--surface2); color:var(--text); font-size:12.5px; cursor:pointer;
+  display:flex; align-items:center; gap:5px; white-space:nowrap; transition:all .15s;
 }
+.tgroup {
+  display:flex; align-items:center; gap:4px; padding:0 10px;
+  border-right:1px solid var(--border); height:38px;
+}
+.tgroup.seg { gap:0; }
+.tgroup.seg .btn { border-radius:0; margin-left:-1px; }
+.tgroup.seg .btn:first-child { border-radius:6px 0 0 6px; margin-left:0; }
+.tgroup.seg .btn:last-child { border-radius:0 6px 6px 0; }
 .btn:hover { background:var(--border); }
 .btn.active { background:var(--accent); border-color:var(--accent); color:#fff; }
 .btn.em.active { background:var(--emission); border-color:var(--emission); }
@@ -169,27 +177,34 @@ body.browsing .slide-title { display:block; }
 
 <div class="toolbar">
   <h1><span>Berlman</span> Digitizer</h1>
-  <label class="btn btn-primary" for="fileInput">Upload Image</label>
-  <input type="file" id="fileInput" accept="image/*">
-  <button class="btn" id="btnBrowse" onclick="enterBrowse()" style="display:none">🗂 Library</button>
-  <input id="libSearch" list="libList" placeholder="Search library…" style="display:none">
-  <datalist id="libList"></datalist>
-  <button class="btn" onclick="toggleFullscreen()" title="Fullscreen">⛶</button>
-  <div class="sep"></div>
-  <button class="btn mode-btn" id="btnAdd" onclick="setMode('add')">Add Same</button>
-  <button class="btn mode-btn" id="btnErase" onclick="setMode('erase')">Erase</button>
-  <button class="btn mode-btn" id="btnPan" onclick="setMode('pan')">Pan</button>
-  <div class="sep"></div>
-  <span id="curveChips" style="display:flex;gap:6px;align-items:center"></span>
-  <button class="btn" id="btnNewCurve" onclick="addNewCurve()" title="Start a new spectrum in a fresh color — for merged or missing curves">+ Add Different</button>
-  <div class="sep"></div>
-  <button class="btn" onclick="undoAction()">Undo</button>
-  <button class="btn" onclick="zoomIn()">Zoom +</button>
-  <button class="btn" onclick="zoomOut()">Zoom -</button>
-  <button class="btn" onclick="zoomFit()">Fit</button>
-  <div class="sep"></div>
-  <button class="btn btn-primary" onclick="exportCSV()">Export CSV</button>
-  <button class="btn" id="btnSave" onclick="saveToLibrary()" style="display:none;background:#1e8f4e;border-color:#1e8f4e;color:#fff">💾 Save to Library</button>
+  <div class="tgroup">
+    <label class="btn btn-primary" for="fileInput" title="Upload an image">⬆ Upload</label>
+    <input type="file" id="fileInput" accept="image/*">
+    <button class="btn" id="btnBrowse" onclick="enterBrowse()" style="display:none" title="Browse the Berlman library">🗂</button>
+    <input id="libSearch" list="libList" placeholder="Search…" style="display:none">
+    <datalist id="libList"></datalist>
+    <button class="btn" onclick="toggleFullscreen()" title="Fullscreen (F)">⛶</button>
+  </div>
+  <div class="tgroup seg">
+    <button class="btn mode-btn" id="btnAdd" onclick="setMode('add')" title="Add dots to the selected curve (1)">＋ Add</button>
+    <button class="btn mode-btn" id="btnAuto" onclick="setMode('auto')" title="Guided trace: click a few dots along missed ink — the program follows the ink between them (4)">⚡ Auto</button>
+    <button class="btn mode-btn" id="btnErase" onclick="setMode('erase')" title="Drag to erase (2)">⌫ Erase</button>
+    <button class="btn mode-btn" id="btnPan" onclick="setMode('pan')" title="Pan (3)">✋ Pan</button>
+  </div>
+  <div class="tgroup">
+    <span id="curveChips" style="display:flex;gap:4px;align-items:center"></span>
+    <button class="btn" id="btnNewCurve" onclick="addNewCurve()" title="New spectrum in a fresh color — for merged or missing curves">＋ New</button>
+  </div>
+  <div class="tgroup">
+    <button class="btn" onclick="undoAction()" title="Undo (Ctrl+Z)">↩</button>
+    <button class="btn" onclick="zoomOut()" title="Zoom out">−</button>
+    <button class="btn" onclick="zoomIn()" title="Zoom in">＋</button>
+    <button class="btn" onclick="zoomFit()" title="Fit (0)">Fit</button>
+  </div>
+  <div class="tgroup" style="border-right:none">
+    <button class="btn btn-primary" onclick="exportCSV()" title="Download CSV">⬇ CSV</button>
+    <button class="btn" id="btnSave" onclick="saveToLibrary()" style="display:none;background:#1e8f4e;border-color:#1e8f4e;color:#fff" title="Write edits into the dataset, overlay & viewer">💾 Save</button>
+  </div>
   <div class="status" id="status"></div>
 </div>
 
@@ -238,12 +253,13 @@ body.browsing .slide-title { display:block; }
 
     <h3 style="margin-top:20px">Controls</h3>
     <div style="font-size:12px; color:var(--text2); line-height:1.6">
-      <b>Add Same:</b> click to place dots on the selected curve<br>
-      <b>+ Add Different:</b> start a NEW spectrum in a fresh color (for merged or missing curves)<br>
-      <b>Erase:</b> click near a dot to remove it<br>
+      <b>＋ Add:</b> click to place dots on the selected curve<br>
+      <b>⚡ Auto:</b> click a few dots along missed ink — the program traces the actual ink between them (deterministic, no AI); Esc restarts the chain<br>
+      <b>⌫ Erase:</b> drag a wide brush over dots to remove them<br>
+      <b>＋ New:</b> start a NEW spectrum in a fresh color (for merged or missing curves)<br>
       <b>Chips:</b> click a colored chip to select which curve you're editing<br>
       <b>Pan / Scroll:</b> drag to move, scroll to zoom<br>
-      <b>Ctrl+Z:</b> undo · <b>E / A:</b> select emission / absorption · <b>1 / 2 / 3:</b> add / erase / pan<br><br>
+      <b>Ctrl+Z:</b> undo · <b>E / A:</b> emission / absorption · <b>1 / 2 / 3 / 4:</b> add / erase / pan / auto<br><br>
       After any dot change the bottom panel regenerates each curve's <b>Excel chart</b>, <b>CSV + Excel downloads</b>, and <b>PhotochemCAD-style page</b>.
     </div>
   </div>
@@ -273,11 +289,57 @@ const NEW_PALETTE = ['#3b82f6', '#e91e63', '#00bcd4', '#f59e0b', '#8bc34a', '#ff
 let newCurveCounter = 0;
 
 // ── Mode / active curve ──
+let waypoints = [];        // auto-trace guide dots
+let isErasing = false, eraseBatch = null, lastMouse = null;
+const ERASE_R = 16;        // screen-px brush radius — wide & drag-capable
+
 function setMode(m) {
   mode = m;
+  if (m !== 'auto') waypoints = [];
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById({add:'btnAdd',erase:'btnErase',pan:'btnPan'}[m]).classList.add('active');
-  wrap.style.cursor = m === 'pan' ? 'grab' : m === 'erase' ? 'pointer' : 'crosshair';
+  document.getElementById({add:'btnAdd',auto:'btnAuto',erase:'btnErase',pan:'btnPan'}[m]).classList.add('active');
+  wrap.style.cursor = m === 'pan' ? 'grab' : m === 'erase' ? 'none' : 'crosshair';
+  draw();
+}
+
+function eraseAt(ix, iy) {
+  const r = ERASE_R / zoom;
+  let removed = 0;
+  for (let ci = 0; ci < curves.length; ci++) {
+    const c = curves[ci];
+    for (let i = c.px.length - 1; i >= 0; i--) {
+      if (Math.hypot(c.px[i] - ix, c.py[i] - iy) <= r) {
+        eraseBatch.pts.push([ci, c.px[i], c.py[i]]);
+        c.px.splice(i, 1); c.py.splice(i, 1);
+        removed++;
+      }
+    }
+  }
+  if (removed) { updateInfo(); draw(); }
+  return removed;
+}
+
+async function addWaypoint(ix, iy) {
+  waypoints.push([ix, iy]);
+  const curve = curves[activeIdx] || curves[0];
+  if (!curve) { addNewCurve(); return addWaypoint(ix, iy); }
+  draw();
+  if (waypoints.length < 2) { showToast('Auto: click the next dot along the ink'); return; }
+  if (!appState.gid) { showToast('Auto-trace needs a library page'); return; }
+  const segment = [waypoints[waypoints.length - 2], waypoints[waypoints.length - 1]];
+  try {
+    const r = await fetch('/api/autotrace', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gid: appState.gid, scale: appState.scale, waypoints: segment }),
+    });
+    const d = await r.json();
+    if (d.error) { showToast(d.error); return; }
+    curve.px.push(...d.px);
+    curve.py.push(...d.py);
+    undoStack.push({ type: 'autotrace', curveIdx: curves.indexOf(curve), count: d.px.length });
+    showToast(`Auto-traced ${d.n} points along the ink`);
+    updateInfo(); draw(); scheduleGenerate();
+  } catch (e) { showToast('Auto-trace failed: ' + e.message); }
 }
 function setActiveCurve(i) {
   activeIdx = i;
@@ -409,7 +471,32 @@ function draw() {
   });
   ctx.globalAlpha = 1.0;
 
+  // auto-trace waypoint guides
+  if (mode === 'auto' && waypoints.length) {
+    ctx.strokeStyle = '#f5c542';
+    ctx.lineWidth = 1.5 / zoom;
+    ctx.setLineDash([6 / zoom, 5 / zoom]);
+    ctx.beginPath();
+    waypoints.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const [wx, wy] of waypoints) {
+      ctx.beginPath();
+      ctx.arc(wx, wy, 6 / zoom, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
   ctx.restore();
+
+  // eraser brush ring (screen space)
+  if (mode === 'erase' && lastMouse) {
+    ctx.strokeStyle = 'rgba(231,76,60,.9)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(lastMouse[0], lastMouse[1], ERASE_R, 0, Math.PI * 2);
+    ctx.stroke();
+  }
 }
 
 // ── Coordinate transforms ──
@@ -470,47 +557,49 @@ canvas.addEventListener('mousedown', e => {
     scheduleGenerate();
   }
 
+  if (mode === 'auto') {
+    addWaypoint(ix, iy);
+  }
+
   if (mode === 'erase') {
-    const threshold = 8 / zoom;
-    let bestDist = Infinity, bestCurve = -1, bestIdx = -1;
-    for (let ci = 0; ci < curves.length; ci++) {
-      const c = curves[ci];
-      for (let i = 0; i < c.px.length; i++) {
-        const d = Math.hypot(c.px[i] - ix, c.py[i] - iy);
-        if (d < threshold && d < bestDist) {
-          bestDist = d;
-          bestCurve = ci;
-          bestIdx = i;
-        }
-      }
-    }
-    if (bestCurve >= 0) {
-      const c = curves[bestCurve];
-      const rx = c.px.splice(bestIdx, 1)[0];
-      const ry = c.py.splice(bestIdx, 1)[0];
-      undoStack.push({ type: 'erase', curveIdx: bestCurve, idx: bestIdx, x: rx, y: ry });
-      showToast(`Erased ${c.name || c.role} point`);
-      updateInfo();
-      draw();
-      scheduleGenerate();
-    }
+    isErasing = true;
+    eraseBatch = { type: 'eraseBatch', pts: [] };
+    eraseAt(ix, iy);
   }
 });
 
 canvas.addEventListener('mousemove', e => {
-  if (!isPanning) return;
   const rect = canvas.getBoundingClientRect();
-  panX = (e.clientX - rect.left) - panStartX;
-  panY = (e.clientY - rect.top) - panStartY;
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  lastMouse = [sx, sy];
+  if (isErasing) {
+    const [ix, iy] = screenToImg(sx, sy);
+    eraseAt(ix, iy);
+    return;
+  }
+  if (mode === 'erase') { draw(); }   // move the brush ring
+  if (!isPanning) return;
+  panX = sx - panStartX;
+  panY = sy - panStartY;
   draw();
 });
 
 canvas.addEventListener('mouseup', () => {
+  if (isErasing) {
+    isErasing = false;
+    if (eraseBatch && eraseBatch.pts.length) {
+      undoStack.push(eraseBatch);
+      showToast(`Erased ${eraseBatch.pts.length} points`);
+      scheduleGenerate();
+    }
+    eraseBatch = null;
+  }
   if (isPanning) {
     isPanning = false;
-    wrap.style.cursor = mode === 'pan' ? 'grab' : mode === 'erase' ? 'pointer' : 'crosshair';
+    wrap.style.cursor = mode === 'pan' ? 'grab' : mode === 'erase' ? 'none' : 'crosshair';
   }
 });
+canvas.addEventListener('mouseleave', () => { lastMouse = null; if (mode === 'erase') draw(); });
 
 // ── Keyboard shortcuts ──
 document.addEventListener('keydown', e => {
@@ -521,6 +610,8 @@ document.addEventListener('keydown', e => {
   else if (e.key === '1') setMode('add');
   else if (e.key === '2') setMode('erase');
   else if (e.key === '3') setMode('pan');
+  else if (e.key === '4') setMode('auto');
+  else if (e.key === 'Escape' && mode === 'auto' && waypoints.length) { waypoints = []; draw(); }
   else if (e.key === 'e' || e.key === 'E') setRole('emission');
   else if (e.key === 'a' || e.key === 'A') setRole('absorption');
   else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undoAction(); }
@@ -544,6 +635,16 @@ function undoAction() {
     c.px.splice(action.idx, 0, action.x);
     c.py.splice(action.idx, 0, action.y);
     showToast('Undid erase');
+  } else if (action.type === 'eraseBatch') {
+    for (const [ci, x, y] of action.pts) {
+      if (curves[ci]) { curves[ci].px.push(x); curves[ci].py.push(y); }
+    }
+    showToast(`Restored ${action.pts.length} points`);
+  } else if (action.type === 'autotrace' && c) {
+    c.px.splice(c.px.length - action.count, action.count);
+    c.py.splice(c.py.length - action.count, action.count);
+    waypoints.pop();
+    showToast(`Undid auto-trace (${action.count} points)`);
   }
   updateInfo();
   draw();

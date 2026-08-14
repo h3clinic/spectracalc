@@ -181,6 +181,81 @@ async def digitize_page(data: dict):
     return payload
 
 
+@app.post("/api/autotrace")
+async def autotrace(data: dict):
+    """Guided ink tracing — deterministic, no AI.
+
+    The user places a few waypoint dots along a missed stretch (a tail the
+    tracer skipped).  Between consecutive waypoints the server follows the
+    actual INK: at each pixel column it predicts y from the waypoint line
+    blended with the last found ink, then snaps to the nearest ink run
+    within a tolerance band.  Where the page is genuinely blank it bridges
+    linearly.  Returns dense per-column points in canvas coordinates.
+    """
+    gid = re.sub(r"[^A-Za-z0-9\-]", "", data.get("gid") or "")
+    scale = float(data.get("scale") or 1.0)
+    wpts = data.get("waypoints") or []
+    if len(wpts) < 2:
+        return JSONResponse({"error": "need at least 2 waypoints"}, status_code=400)
+    path = os.path.join(PAGES_DIR, gid + ".png") if gid else None
+    if not path or not os.path.exists(path):
+        return JSONResponse({"error": "autotrace needs a library page"}, status_code=400)
+
+    gray, bwbin = B.load_binary(path)
+    B._set_scale(bwbin.shape[1])
+    h, w = bwbin.shape
+    tol = B._s(14)
+    ws = B._s(4)
+
+    pts = []
+    for (ax, ay), (bx, by) in zip(wpts, wpts[1:]):
+        x0, y0 = ax / scale, ay / scale
+        x1, y1 = bx / scale, by / scale
+        if x1 < x0:
+            x0, y0, x1, y1 = x1, y1, x0, y0
+        xi0, xi1 = int(round(x0)), int(round(x1))
+        if xi1 <= xi0:
+            continue
+        anchor = y0
+        for x in range(xi0, xi1 + 1):
+            t = (x - xi0) / max(1, xi1 - xi0)
+            base = y0 + (y1 - y0) * t
+            pred = 0.55 * base + 0.45 * anchor
+            lo_y = max(0, int(pred - tol))
+            hi_y = min(h - 1, int(pred + tol))
+            col = bwbin[lo_y:hi_y + 1, x]
+            ys = np.where(col > 0)[0]
+            if len(ys):
+                # contiguous run nearest the prediction
+                runs, start = [], ys[0]
+                prev = ys[0]
+                for yv in ys[1:]:
+                    if yv - prev > 3:
+                        runs.append((start, prev))
+                        start = yv
+                    prev = yv
+                runs.append((start, prev))
+                lo_r, hi_r = min(runs, key=lambda r: abs((r[0] + r[1]) / 2
+                                                         + lo_y - pred))
+                run_len = hi_r - lo_r + 1
+                y_here = (lo_y + lo_r + ws / 2.0 if run_len > 3 * ws
+                          else lo_y + (lo_r + hi_r) / 2.0)
+                anchor = y_here
+            else:
+                y_here = base          # blank paper: bridge on the guide line
+                anchor = 0.7 * anchor + 0.3 * base
+            pts.append((x, y_here))
+
+    # one point per column
+    seen = {}
+    for x, y in pts:
+        seen[x] = y
+    out = sorted(seen.items())
+    return {"px": [round(x * scale, 2) for x, _ in out],
+            "py": [round(y * scale, 2) for _, y in out],
+            "n": len(out)}
+
+
 @app.post("/api/save_page")
 async def save_page(data: dict):
     """Write edited curves back into the LIBRARY: canonical spectra_all.json
