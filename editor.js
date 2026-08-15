@@ -93,6 +93,7 @@ async function loadPage() {
   img = new Image();
   img.onload = () => {
     imgW = img.width; imgH = img.height;
+    INK = null; waypoints = [];      // rebuilt lazily for the new page
     pageScale = frame.w / imgW;           // original px per displayed scan px
     document.getElementById('loading').style.display = 'none';
     resize(); fit(); setMode('add'); renderSwatches(); refresh();
@@ -168,6 +169,180 @@ function physical(c) {
   return { wl: ow, inten: oi };
 }
 
+/* ── auto-trace ──────────────────────────────────────────────────────────
+ * Deterministic, not AI: you drop a few dots along ink the digitizer missed
+ * and the run between them is followed pixel by pixel.  The local app walks
+ * the isolated curve mask server-side; here the same walk runs over the
+ * shipped page scan, read once into an ink bitmap.
+ */
+let INK = null;           // {w, h, mask: Uint8Array} in SCAN pixels
+let waypoints = [];       // guide dots, ORIGINAL page px
+
+function buildInk() {
+  const c = document.createElement('canvas');
+  c.width = imgW; c.height = imgH;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(img, 0, 0);
+  const d = g.getImageData(0, 0, imgW, imgH).data;
+  const mask = new Uint8Array(imgW * imgH);
+  // Otsu on the luminance histogram — the scans are black ink on paper, but
+  // exposure varies from page to page, so don't hard-code a cutoff
+  const hist = new Float64Array(256);
+  const lum = new Uint8Array(imgW * imgH);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const v = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000 | 0;
+    lum[p] = v; hist[v]++;
+  }
+  const total = imgW * imgH;
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sumB = 0, wB = 0, best = 0, thr = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (!wB) continue;
+    const wF = total - wB;
+    if (!wF) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const between = wB * wF * (mB - mF) * (mB - mF);
+    if (between > best) { best = between; thr = t; }
+  }
+  for (let p = 0; p < lum.length; p++) mask[p] = lum[p] <= thr ? 1 : 0;
+  INK = { w: imgW, h: imgH, mask, thr };
+}
+
+const isInk = (x, y) =>
+  x >= 0 && y >= 0 && x < INK.w && y < INK.h && INK.mask[y * INK.w + x] === 1;
+
+/** vertical ink runs in one scan column */
+function columnRuns(x) {
+  const runs = [];
+  let start = -1;
+  for (let y = 0; y < INK.h; y++) {
+    if (INK.mask[y * INK.w + x]) {
+      if (start < 0) start = y;
+    } else if (start >= 0) { runs.push([start, y - 1]); start = -1; }
+  }
+  if (start >= 0) runs.push([start, INK.h - 1]);
+  return runs;
+}
+
+/** median stroke thickness near a scan point — sets the tolerance band */
+function strokeWidth(sx, sy) {
+  const widths = [];
+  for (let dx = -6; dx <= 6; dx++) {
+    for (const [a, b] of columnRuns(Math.round(sx) + dx)) {
+      if (sy >= a - 4 && sy <= b + 4) { widths.push(b - a + 1); break; }
+    }
+  }
+  if (!widths.length) return 3;
+  widths.sort((p, q) => p - q);
+  return Math.max(2, widths[widths.length >> 1]);
+}
+
+/**
+ * Follow the ink from waypoint A to waypoint B (both ORIGINAL page px).
+ * Returns points in ORIGINAL page px.
+ */
+function traceBetween(A, B) {
+  if (!INK) buildInk();
+  const ax = A[0] / pageScale, ay = A[1] / pageScale;
+  const bx = B[0] / pageScale, by = B[1] / pageScale;
+  const x0 = Math.round(Math.min(ax, bx)), x1 = Math.round(Math.max(ax, bx));
+  if (x1 - x0 < 2) return [];
+  const flip = ax > bx;
+  const yStart = flip ? by : ay, yEnd = flip ? ay : by;
+
+  const ws = strokeWidth(ax, ay);
+  const out = [];
+  let y = yStart;      // where the walk currently sits
+  let slope = 0;       // smoothed dy per column — the curve's local steepness
+
+  // Where the OTHER spectra already run, by scan column.  At a crossing the
+  // neighbouring curve's ink is often nearer the prediction than our own, and
+  // the walk would change tracks and never come back — so its track is
+  // penalised rather than forbidden (at a true crossing they coincide).
+  const foreign = new Map();
+  curves.forEach((c, ci) => {
+    if (ci === activeIdx) return;
+    for (let i = 0; i < c.px.length; i++) {
+      const k = Math.round(c.px[i] / pageScale);
+      const v = c.py[i] / pageScale;
+      const arr = foreign.get(k);
+      if (arr) arr.push(v); else foreign.set(k, [v]);
+    }
+  });
+  const foreignPenalty = (x, cand) => {
+    const arr = foreign.get(x);
+    if (!arr) return 0;
+    let near = Infinity;
+    for (const v of arr) near = Math.min(near, Math.abs(v - cand));
+    const band = 2.5 * ws;
+    return near < band ? 3 * ws * (1 - near / band) : 0;
+  };
+
+  // pick the ink run closest to `want`, riding the near edge of tall runs
+  // (a steep flank or a crossing shows up as one very tall run)
+  const nearestRun = (x, want) => {
+    let bestY = null, bestD = Infinity, bestRaw = Infinity, bestRun = null;
+    for (const r of columnRuns(x)) {
+      const [a, b] = r;
+      // inside a tall run the nearest point to the prediction is the
+      // prediction itself, clamped — riding it is how a vertical flank walks
+      const cand = (b - a + 1) > 3 * ws ? Math.max(a, Math.min(b, want))
+                                        : (a + b) / 2;
+      const raw = Math.abs(cand - want);
+      const score = raw + foreignPenalty(x, cand);
+      if (score < bestD) { bestD = score; bestY = cand; bestRaw = raw; bestRun = r; }
+    }
+    return [bestY, bestRaw, bestRun];
+  };
+
+  for (let x = x0; x <= x1; x++) {
+    const t = (x - x0) / ((x1 - x0) || 1);
+    const base = yStart + (yEnd - yStart) * t;     // straight guide A->B
+    // follow the curve's own trajectory, nudged toward the guide so it
+    // cannot run away; a straight-line prediction loses steep flanks, which
+    // is exactly where the digitizer needs help
+    const pred = 0.85 * (y + slope) + 0.15 * base;
+    // the tolerance has to grow with steepness: on a near-vertical flank the
+    // ink legitimately moves many rows between adjacent columns
+    const tol = Math.max(8, 3 * ws + 1.8 * Math.abs(slope));
+
+    let [cand, dist, run] = nearestRun(x, pred);
+    if (cand === null || dist > tol) {
+      // lost it — try again around the guide before giving up on this column
+      const [c2, d2, r2] = nearestRun(x, base);
+      if (c2 !== null && d2 <= tol * 2.5) { cand = c2; dist = d2; run = r2; }
+      else cand = null;
+    }
+    const ny = cand !== null ? cand : base;        // blank paper -> bridge
+
+    out.push([x * pageScale, ny * pageScale]);
+    slope = 0.55 * slope + 0.45 * (ny - y);
+    y = ny;
+  }
+  return out;
+}
+
+async function addWaypoint(ox, oy) {
+  waypoints.push([ox, oy]);
+  draw();
+  if (waypoints.length < 2) { toast('Auto: click the next dot along the ink'); return; }
+  const c = curves[activeIdx];
+  if (!c) { toast('Pick a colour first'); return; }
+  const seg = traceBetween(waypoints[waypoints.length - 2], waypoints[waypoints.length - 1]);
+  if (!seg.length) { toast('Those two dots are too close together'); return; }
+  for (const [x, y] of seg) { c.px.push(x); c.py.push(y); }
+  undoStack.push({ t: 'auto', ci: activeIdx, n: seg.length });
+  // short hops track the ink almost perfectly; long ones can drift across a
+  // busy stretch, so say so rather than let it fail quietly
+  const span = Math.abs(waypoints[waypoints.length - 1][0] - waypoints[waypoints.length - 2][0]);
+  toast(`Auto-traced ${seg.length} points along the ink` +
+        (span > 250 ? ' — long hop, add closer dots if it drifts' : ''));
+  refresh(); draw();
+}
+
 /* ── drawing ─────────────────────────────────────────────────────────── */
 
 function resize() {
@@ -209,6 +384,26 @@ function draw() {
       ctx.fill();
     }
   });
+  // auto-trace guide dots + the chain between them
+  if (mode === 'auto' && waypoints.length) {
+    const gr = Math.max(3, 5 / zoom);
+    ctx.strokeStyle = '#EFC047';
+    ctx.lineWidth = Math.max(1, 1.5 / zoom);
+    ctx.setLineDash([6 / zoom, 5 / zoom]);
+    ctx.beginPath();
+    waypoints.forEach(([ox, oy], i) => {
+      const [sx, sy] = toScan(ox, oy);
+      i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#EFC047';
+    for (const [ox, oy] of waypoints) {
+      const [sx, sy] = toScan(ox, oy);
+      ctx.beginPath(); ctx.arc(sx, sy, gr, 0, 6.2832); ctx.fill();
+    }
+  }
+
   ctx.globalAlpha = 1;
   ctx.restore();
 
@@ -238,12 +433,13 @@ function draw() {
 
 function setMode(m) {
   mode = m;
+  if (m !== 'auto') waypoints = [];
   document.querySelectorAll('.tool').forEach(b => b.classList.remove('on'));
-  ({ add: 'tAdd', erase: 'tErase', pan: 'tPan' })[m] &&
-    document.getElementById({ add: 'tAdd', erase: 'tErase', pan: 'tPan' }[m]).classList.add('on');
+  const btn = { add: 'tAdd', auto: 'tAuto', erase: 'tErase', pan: 'tPan' }[m];
+  if (btn) document.getElementById(btn).classList.add('on');
   wrap.style.cursor = m === 'pan' ? 'grab' : m === 'erase' ? 'none' : 'crosshair';
   document.getElementById('sbMode').textContent =
-    { add: 'Add dots', erase: 'Eraser', pan: 'Pan' }[m] || m;
+    { add: 'Add dots', auto: 'Auto-trace', erase: 'Eraser', pan: 'Pan' }[m] || m;
   draw();
 }
 
@@ -284,6 +480,11 @@ function undo() {
     const c = curves[a.ci];
     c.px.splice(a.i, 1); c.py.splice(a.i, 1);
     toast('Undid add');
+  } else if (a.t === 'auto') {
+    const c = curves[a.ci];
+    c.px.splice(c.px.length - a.n, a.n);
+    c.py.splice(c.py.length - a.n, a.n);
+    toast(`Undid auto-trace (${a.n} points)`);
   } else if (a.t === 'erase') {
     for (const [ci, x, y] of a.pts) { curves[ci].px.push(x); curves[ci].py.push(y); }
     toast(`Restored ${a.pts.length} dots`);
@@ -494,6 +695,8 @@ canvas.addEventListener('mousedown', e => {
     c.px.push(ox); c.py.push(oy);
     undoStack.push({ t: 'add', ci: activeIdx, i: c.px.length - 1 });
     refresh(); draw();
+  } else if (mode === 'auto') {
+    addWaypoint(ox, oy);
   } else if (mode === 'erase') {
     isErasing = true; eraseBatch = { t: 'erase', pts: [] }; lastErase = null;
     eraseStroke(ox, oy);
@@ -546,6 +749,8 @@ document.addEventListener('keydown', e => {
   if (e.key === '1') setMode('add');
   else if (e.key === '2') setMode('erase');
   else if (e.key === '3') setMode('pan');
+  else if (e.key === '4') setMode('auto');
+  else if (e.key === 'Escape' && mode === 'auto' && waypoints.length) { waypoints = []; draw(); toast('Auto chain reset'); }
   else if (e.key === 's' || e.key === 'S') setScope(eraseScope === 'active' ? 'all' : 'active');
   else if (e.key === '[') { ERASE_R = Math.max(8, ERASE_R - 6); syncSizes(); draw(); }
   else if (e.key === ']') { ERASE_R = Math.min(80, ERASE_R + 6); syncSizes(); draw(); }
@@ -582,6 +787,7 @@ document.querySelectorAll('#scope .sc').forEach(b => {
 });
 
 document.getElementById('tAdd').onclick = () => setMode('add');
+document.getElementById('tAuto').onclick = () => setMode('auto');
 document.getElementById('tErase').onclick = () => setMode('erase');
 document.getElementById('tPan').onclick = () => setMode('pan');
 document.getElementById('tUndo').onclick = undo;

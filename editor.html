@@ -54,6 +54,12 @@
     background: var(--surface2); color: var(--text); font-size: 15px; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
   }
+  /* the four mode tools carry their name — an unlabelled icon grid hides
+     what the tools actually are */
+  .tools.named { grid-template-columns: 36px 36px; }
+  .tools.named .tool { width: 36px; height: 40px; flex-direction: column; gap: 1px; }
+  .tools.named .tool span { font-size: 14px; line-height: 1; }
+  .tools.named .tool em { font-style: normal; font-size: 8.5px; letter-spacing: .2px; }
   .tool:hover { background: var(--border); }
   .tool.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .sizes { display: flex; gap: 5px; }
@@ -138,10 +144,17 @@
 <div class="main">
   <div class="rail">
     <div class="lbl">Tools</div>
+    <div class="tools named">
+      <button class="tool" id="tAdd" title="Add dots to the selected curve (1)">
+        <span>＋</span><em>Add</em></button>
+      <button class="tool" id="tAuto" title="Auto-trace: click a few dots along the missed ink and the curve is followed between them — deterministic pixel following, not AI (4). Esc restarts the chain.">
+        <span>⚡</span><em>Auto</em></button>
+      <button class="tool" id="tErase" title="Eraser — swipe across dots (2)">
+        <span>⌫</span><em>Erase</em></button>
+      <button class="tool" id="tPan" title="Pan (3)">
+        <span>✋</span><em>Pan</em></button>
+    </div>
     <div class="tools">
-      <button class="tool" id="tAdd"   title="Add dots to the selected curve (1)">＋</button>
-      <button class="tool" id="tErase" title="Eraser — swipe across dots (2)">⌫</button>
-      <button class="tool" id="tPan"   title="Pan (3)">✋</button>
       <button class="tool" id="tUndo"  title="Undo (Ctrl+Z)">↩</button>
       <button class="tool" id="tFit"   title="Fit to window (0)">⤢</button>
       <button class="tool" id="tOut"   title="Zoom out (−)">⊖</button>

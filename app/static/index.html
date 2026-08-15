@@ -150,6 +150,11 @@ body.browsing .toolrail { display:none; }
   display:flex; align-items:center; justify-content:center; transition:all .12s;
 }
 .tool:hover { background:var(--border); }
+/* the four mode tools carry their name — an unlabelled icon grid hides what
+   the tools actually are (Auto in particular went unnoticed) */
+.toolgrid .mode-btn { height:40px; flex-direction:column; gap:1px; }
+.toolgrid .mode-btn span { font-size:14px; line-height:1; }
+.toolgrid .mode-btn em { font-style:normal; font-size:8.5px; letter-spacing:.2px; }
 .tool.active { background:var(--accent); border-color:var(--accent); color:#fff; }
 .scopegrid { display:flex; flex-direction:column; gap:3px; width:72px; }
 .scopebtn {
@@ -246,10 +251,12 @@ body.browsing .toolrail { display:none; }
   <div class="toolrail" id="toolrail">
     <div class="rail-label">Tools</div>
     <div class="toolgrid">
-      <button class="tool mode-btn" id="btnAdd" onclick="setMode('add')" title="Add dots to the selected curve (1)">＋</button>
-      <button class="tool mode-btn" id="btnAuto" onclick="setMode('auto')" title="Guided trace: click a few dots along missed ink — the program follows the ink between them (4)">⚡</button>
-      <button class="tool mode-btn" id="btnErase" onclick="setMode('erase')" title="Eraser — swipe across dots; ≥50% covered is gone (2)">⌫</button>
-      <button class="tool mode-btn" id="btnPan" onclick="setMode('pan')" title="Pan (3)">✋</button>
+      <button class="tool mode-btn" id="btnAdd" onclick="setMode('add')" title="Add dots to the selected curve (1)"><span>＋</span><em>Add</em></button>
+      <button class="tool mode-btn" id="btnAuto" onclick="setMode('auto')" title="Auto-trace: click a few dots along missed ink and the program follows the ink between them — deterministic pixel following, not AI (4). Esc restarts the chain."><span>⚡</span><em>Auto</em></button>
+      <button class="tool mode-btn" id="btnErase" onclick="setMode('erase')" title="Eraser — swipe across dots; ≥50% covered is gone (2)"><span>⌫</span><em>Erase</em></button>
+      <button class="tool mode-btn" id="btnPan" onclick="setMode('pan')" title="Pan (3)"><span>✋</span><em>Pan</em></button>
+    </div>
+    <div class="toolgrid" style="margin-top:-4px">
       <button class="tool" onclick="undoAction()" title="Undo (Ctrl+Z)">↩</button>
       <button class="tool" onclick="zoomFit()" title="Fit to window (0)">⤢</button>
       <button class="tool" onclick="zoomOut()" title="Zoom out (−)">⊖</button>
