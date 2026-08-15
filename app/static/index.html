@@ -151,6 +151,12 @@ body.browsing .toolrail { display:none; }
 }
 .tool:hover { background:var(--border); }
 .tool.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+.scopegrid { display:flex; flex-direction:column; gap:3px; width:72px; }
+.scopebtn {
+  border:1px solid var(--border); border-radius:5px; background:var(--surface2);
+  color:var(--text2); font-size:10.5px; padding:4px 0; cursor:pointer;
+}
+.scopebtn.active { background:var(--accent); border-color:var(--accent); color:#fff; }
 .sizegrid { display:flex; gap:5px; }
 .sizebtn {
   width:22px; height:22px; border:1px solid var(--border); border-radius:4px;
@@ -249,6 +255,11 @@ body.browsing .toolrail { display:none; }
       <button class="tool" onclick="zoomOut()" title="Zoom out (−)">⊖</button>
       <button class="tool" onclick="zoomIn()" title="Zoom in (+)">⊕</button>
     </div>
+    <div class="rail-label">Erases</div>
+    <div class="scopegrid" id="scopeGrid">
+      <button class="scopebtn active" data-scope="active" title="Eraser removes only the selected curve's colour — safe where spectra cross (S)">This&nbsp;color</button>
+      <button class="scopebtn" data-scope="all" title="Eraser removes dots from every curve (S)">All</button>
+    </div>
     <div class="rail-label">Size</div>
     <div class="sizegrid" id="sizeGrid">
       <button class="sizebtn" data-r="12" title="Small brush — 12 px"><i style="width:5px;height:5px"></i></button>
@@ -305,7 +316,7 @@ body.browsing .toolrail { display:none; }
     <div style="font-size:12px; color:var(--text2); line-height:1.6">
       <b>＋ Add:</b> click to place dots on the selected curve<br>
       <b>⚡ Auto:</b> click a few dots along missed ink — the program traces the actual ink between them (deterministic, no AI); Esc restarts the chain<br>
-      <b>⌫ Erase:</b> swipe the brush across dots — anything ≥50% covered along the path is gone; resize with [ and ]<br>
+      <b>⌫ Erase:</b> swipe the brush across dots — anything ≥50% covered along the path is gone; resize with [ and ]. By default it only removes the <b>selected colour</b>, so crossing spectra are safe; press <b>S</b> (or the Erases buttons) to switch between this-colour and all-curves<br>
       <b>＋ New:</b> start a NEW spectrum in a fresh color (for merged or missing curves)<br>
       <b>Colors:</b> click a swatch in the left rail to select which curve you're editing<br>
       <b>Pan / Scroll:</b> drag to move, scroll to zoom<br>
@@ -319,9 +330,10 @@ body.browsing .toolrail { display:none; }
 
 <div class="statusbar">
   <span>Mode: <b id="sbMode">Pan</b></span>
+  <span>Erases: <b id="sbScope">selected only</b></span>
   <span id="sbPos"></span>
   <span>Zoom: <b id="sbZoom">100%</b></span>
-  <span style="margin-left:auto">1 Add · 2 Erase · 3 Pan · 4 Auto · [ ] brush size · Ctrl+Z undo · 0 fit</span>
+  <span style="margin-left:auto">1 Add · 2 Erase · 3 Pan · 4 Auto · S scope · [ ] brush · Ctrl+Z undo · 0 fit</span>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -349,6 +361,7 @@ let newCurveCounter = 0;
 let waypoints = [];        // auto-trace guide dots
 let isErasing = false, eraseBatch = null, lastMouse = null, lastErase = null;
 let ERASE_R = 26;          // screen-px brush radius — resize with [ and ]
+let eraseScope = 'active'; // 'active' = only the selected curve's colour | 'all'
 
 function setMode(m) {
   mode = m;
@@ -378,6 +391,9 @@ function eraseStroke(ix, iy) {
   const [ax, ay] = lastErase || [ix, iy];
   let removed = 0;
   for (let ci = 0; ci < curves.length; ci++) {
+    // colour-scoped by default: where two spectra cross, the brush must not
+    // take the other curve's dots with it
+    if (eraseScope === 'active' && ci !== activeIdx) continue;
     const c = curves[ci];
     for (let i = c.px.length - 1; i >= 0; i--) {
       if (distToSegment(c.px[i], c.py[i], ax, ay, ix, iy) <= r) {
@@ -442,7 +458,7 @@ function renderChips() {
     sw.style.background = c.color;
     sw.title = `${c.name || c.role} — ${c.px.length} pts`;
     sw.innerHTML = `<span class="cnt">${c.px.length}</span>`;
-    sw.onclick = () => setActiveCurve(i);
+    sw.onclick = () => { setActiveCurve(i); setEraseScope(eraseScope); };
     box.appendChild(sw);
   });
   const plus = document.createElement('button');
@@ -467,6 +483,20 @@ function syncSizeGrid() {
 }
 document.querySelectorAll('#sizeGrid .sizebtn').forEach(b => {
   b.onclick = () => { ERASE_R = +b.dataset.r; syncSizeGrid(); setMode('erase'); };
+});
+
+function setEraseScope(sc) {
+  eraseScope = sc;
+  document.querySelectorAll('#scopeGrid .scopebtn').forEach(b =>
+    b.classList.toggle('active', b.dataset.scope === sc));
+  const el = document.getElementById('sbScope');
+  const c = curves[activeIdx];
+  if (el) el.textContent = sc === 'active'
+    ? ((c ? (c.name || c.role) : 'selected') + ' only') : 'all curves';
+  draw();
+}
+document.querySelectorAll('#scopeGrid .scopebtn').forEach(b => {
+  b.onclick = () => setEraseScope(b.dataset.scope);
 });
 
 // ── Status-bar cursor readout: image px -> physical λ / intensity ──
@@ -606,16 +636,24 @@ function draw() {
 
   // eraser brush ring (screen space)
   if (mode === 'erase' && lastMouse) {
-    ctx.strokeStyle = 'rgba(231,76,60,.9)';
-    ctx.fillStyle = 'rgba(231,76,60,.12)';
+    // the ring wears the colour it will actually take, so the scope reads at
+    // a glance before the drag starts
+    const actC = curves[activeIdx];
+    const tint = (eraseScope === 'active' && actC) ? actC.color : '#e74c3c';
+    ctx.strokeStyle = tint;
+    ctx.fillStyle = tint + '22';
     ctx.lineWidth = 1.5;
+    if (eraseScope === 'all') ctx.setLineDash([5, 4]);
     ctx.beginPath();
     ctx.arc(lastMouse[0], lastMouse[1], ERASE_R, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = 'rgba(231,76,60,.9)';
+    ctx.setLineDash([]);
+    ctx.fillStyle = tint;
     ctx.font = '11px system-ui';
-    ctx.fillText('⌫ ' + ERASE_R + 'px  ([ ] resize)', lastMouse[0] + ERASE_R + 6, lastMouse[1] + 4);
+    ctx.fillText('⌫ ' + ERASE_R + 'px · ' +
+                 (eraseScope === 'active' ? (actC ? (actC.name || actC.role) : 'none') : 'ALL curves'),
+                 lastMouse[0] + ERASE_R + 6, lastMouse[1] + 4);
   }
 }
 
@@ -736,6 +774,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === '4') setMode('auto');
   else if (e.key === '[' && mode === 'erase') { ERASE_R = Math.max(8, ERASE_R - 6); syncSizeGrid(); draw(); }
   else if (e.key === ']' && mode === 'erase') { ERASE_R = Math.min(80, ERASE_R + 6); syncSizeGrid(); draw(); }
+  else if (e.key === 's' || e.key === 'S') setEraseScope(eraseScope === 'active' ? 'all' : 'active');
   else if (e.key === 'Escape' && mode === 'auto' && waypoints.length) { waypoints = []; draw(); }
   else if (e.key === 'e' || e.key === 'E') setRole('emission');
   else if (e.key === 'a' || e.key === 'A') setRole('absorption');

@@ -21,6 +21,7 @@ let zoom = 1, panX = 0, panY = 0;
 let mode = 'pan';
 let undoStack = [];
 let ERASE_R = 26;
+let eraseScope = 'active';   // 'active' = only the selected colour | 'all'
 let isErasing = false, eraseBatch = null, lastErase = null, lastMouse = null;
 let isPanning = false, panSX = 0, panSY = 0;
 
@@ -170,13 +171,15 @@ function physical(c) {
 /* ── drawing ─────────────────────────────────────────────────────────── */
 
 function resize() {
-  canvas.width = wrap.clientWidth;
-  canvas.height = wrap.clientHeight;
+  // a hidden/unlaid-out container reports 0 — never let that reach zoom,
+  // or the view comes back blank when the tab is shown again
+  canvas.width = Math.max(1, wrap.clientWidth);
+  canvas.height = Math.max(1, wrap.clientHeight);
   draw();
 }
 
 function fit() {
-  if (!imgW) return;
+  if (!imgW || canvas.width < 2 || canvas.height < 2) return;
   zoom = Math.min(canvas.width / imgW, canvas.height / imgH) * 0.97;
   panX = (canvas.width - imgW * zoom) / 2;
   panY = (canvas.height - imgH * zoom) / 2;
@@ -210,16 +213,24 @@ function draw() {
   ctx.restore();
 
   if (mode === 'erase' && lastMouse) {
+    // the ring wears the colour it will actually take, so the scope is
+    // obvious before the drag starts
+    const act = curves[activeIdx];
+    const tint = (eraseScope === 'active' && act) ? act.color : '#e74c3c';
     ctx.beginPath();
     ctx.arc(lastMouse[0], lastMouse[1], ERASE_R, 0, 6.2832);
-    ctx.fillStyle = 'rgba(231,76,60,0.18)';
+    ctx.fillStyle = tint + '30';
     ctx.fill();
-    ctx.strokeStyle = '#e74c3c';
+    ctx.strokeStyle = tint;
     ctx.lineWidth = 1.5;
+    if (eraseScope === 'all') ctx.setLineDash([5, 4]);
     ctx.stroke();
-    ctx.fillStyle = '#e74c3c';
+    ctx.setLineDash([]);
+    ctx.fillStyle = tint;
     ctx.font = '12px system-ui';
-    ctx.fillText('⌫ ' + ERASE_R + 'px', lastMouse[0] + ERASE_R + 6, lastMouse[1] + 4);
+    ctx.fillText(`⌫ ${ERASE_R}px · ` +
+                 (eraseScope === 'active' ? (act ? act.name : 'none') : 'ALL curves'),
+                 lastMouse[0] + ERASE_R + 6, lastMouse[1] + 4);
   }
 }
 
@@ -250,6 +261,9 @@ function eraseStroke(ox, oy) {
   const [ax, ay] = lastErase || [ox, oy];
   let n = 0;
   curves.forEach((c, ci) => {
+    // colour-scoped by default: where the curves cross, the brush must not
+    // take the other spectrum's dots with it
+    if (eraseScope === 'active' && ci !== activeIdx) return;
     for (let i = c.px.length - 1; i >= 0; i--) {
       if (distToSeg(c.px[i], c.py[i], ax, ay, ox, oy) <= r) {
         eraseBatch.pts.push([ci, c.px[i], c.py[i]]);
@@ -288,11 +302,15 @@ function renderSwatches() {
     b.style.background = c.color;
     b.title = `${c.name} — ${c.px.length} dots`;
     b.innerHTML = `<span class="n">${c.px.length}</span>`;
-    b.onclick = () => { activeIdx = i; renderSwatches(); draw(); };
+    b.onclick = () => { activeIdx = i; renderSwatches(); setScope(eraseScope); };
     box.appendChild(b);
   });
   document.getElementById('activeName').textContent =
     curves[activeIdx] ? curves[activeIdx].name : '—';
+  const sc = document.getElementById('sbScope');
+  if (sc && eraseScope === 'active') {
+    sc.textContent = curves[activeIdx] ? curves[activeIdx].name + ' only' : 'selected only';
+  }
 }
 
 function miniChart(id, wl, inten, color) {
@@ -528,6 +546,7 @@ document.addEventListener('keydown', e => {
   if (e.key === '1') setMode('add');
   else if (e.key === '2') setMode('erase');
   else if (e.key === '3') setMode('pan');
+  else if (e.key === 's' || e.key === 'S') setScope(eraseScope === 'active' ? 'all' : 'active');
   else if (e.key === '[') { ERASE_R = Math.max(8, ERASE_R - 6); syncSizes(); draw(); }
   else if (e.key === ']') { ERASE_R = Math.min(80, ERASE_R + 6); syncSizes(); draw(); }
   else if (e.key === '0') fit();
@@ -547,6 +566,19 @@ function syncSizes() {
 }
 document.querySelectorAll('#sizes .size').forEach(b => {
   b.onclick = () => { ERASE_R = +b.dataset.r; syncSizes(); setMode('erase'); };
+});
+
+function setScope(s) {
+  eraseScope = s;
+  document.querySelectorAll('#scope .sc').forEach(b =>
+    b.classList.toggle('on', b.dataset.scope === s));
+  const act = curves[activeIdx];
+  document.getElementById('sbScope').textContent =
+    s === 'active' ? (act ? act.name + ' only' : 'selected only') : 'all curves';
+  draw();
+}
+document.querySelectorAll('#scope .sc').forEach(b => {
+  b.onclick = () => setScope(b.dataset.scope);
 });
 
 document.getElementById('tAdd').onclick = () => setMode('add');

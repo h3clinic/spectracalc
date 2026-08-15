@@ -64,6 +64,12 @@
   }
   .size.on { border-color: var(--emission); }
   .size i { display: block; border-radius: 50%; background: var(--text2); }
+  .scope { display: flex; flex-direction: column; gap: 3px; width: 72px; }
+  .sc {
+    border: 1px solid var(--border); border-radius: 5px; background: var(--surface2);
+    color: var(--text2); font-size: 10.5px; padding: 4px 0; cursor: pointer;
+  }
+  .sc.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .swatches { display: grid; grid-template-columns: 26px 26px; gap: 5px; }
   .sw {
     width: 26px; height: 26px; border: 2px solid var(--border); border-radius: 4px;
@@ -148,6 +154,11 @@
       <button class="size on" data-r="26" title="Medium brush"><i style="width:9px;height:9px"></i></button>
       <button class="size" data-r="48" title="Large brush"><i style="width:14px;height:14px"></i></button>
     </div>
+    <div class="lbl">Erases</div>
+    <div class="scope" id="scope">
+      <button class="sc on" data-scope="active" title="Eraser removes only the selected colour — safe where curves cross (S)">This&nbsp;color</button>
+      <button class="sc" data-scope="all" title="Eraser removes dots from every curve (S)">All</button>
+    </div>
     <div class="lbl">Colors</div>
     <div class="swatches" id="swatches"></div>
     <div class="active-name" id="activeName">—</div>
@@ -196,9 +207,10 @@
 
 <div class="status">
   <span>Mode: <b id="sbMode">Pan</b></span>
+  <span>Erases: <b id="sbScope">selected only</b></span>
   <span id="sbPos"></span>
   <span>Zoom: <b id="sbZoom">—</b></span>
-  <span style="margin-left:auto">1 Add · 2 Erase · 3 Pan · [ ] brush · Ctrl+Z undo · 0 fit</span>
+  <span style="margin-left:auto">1 Add · 2 Erase · 3 Pan · S scope · [ ] brush · Ctrl+Z undo · 0 fit</span>
 </div>
 
 <div class="toast" id="toast"></div>
