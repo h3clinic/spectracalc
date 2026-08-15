@@ -472,13 +472,17 @@
       </div>
     </div>
 
+    <!-- Chart axis unit — applies to BOTH charts, so it must not live inside
+         either section: 23 of the 308 pages have no absorption curve and
+         absSection is hidden for them. -->
+    <div id="axisToggle" style="display:none;text-align:right;margin:8px 0 -8px;font-size:13px">
+      Axis:
+      <button id="axisWn" onclick="setChartUnit('wn')" style="padding:4px 10px;cursor:pointer">cm&#8315;&#185; (book)</button>
+      <button id="axisNm" onclick="setChartUnit('nm')" style="padding:4px 10px;cursor:pointer">nm</button>
+    </div>
+
     <!-- Absorption Spectrum -->
     <div class="pcc-spectrum-section" id="absSection" style="display:none">
-      <div style="float:right;margin-top:6px;font-size:13px">
-        Axis:
-        <button onclick="setChartUnit('wn')" style="padding:4px 10px;cursor:pointer">cm&#8315;&#185; (book)</button>
-        <button onclick="setChartUnit('nm')" style="padding:4px 10px;cursor:pointer">nm</button>
-      </div>
       <h3>Absorption Spectrum</h3>
       <div class="pcc-chart-row">
         <div class="pcc-chart-meta">
@@ -568,7 +572,11 @@ function showCompound(id) {
   window._curId = id;
   const d = SPECTRA[id];
   document.querySelectorAll('.pcc-compound-list li').forEach(li => {
-    li.classList.toggle('active', li.dataset.id === id);
+    const on = li.dataset.id === id;
+    li.classList.toggle('active', on);
+    // the list is 308 rows long — a deep-linked compound is otherwise
+    // selected somewhere off-screen with nothing to show for it
+    if (on) li.scrollIntoView({ block: 'nearest' });
   });
   document.getElementById('placeholder').style.display = 'none';
   document.getElementById('breadcrumbName').textContent = d.name;
@@ -633,6 +641,9 @@ function showCompound(id) {
   } else {
     emsS.style.display = 'none';
   }
+
+  // the unit switch is only meaningful when at least one chart is on screen
+  syncAxisToggle(!!(d.ab || d.em));
 }
 
 function smoothVals(v) {
@@ -660,6 +671,19 @@ window.chartUnit = window.chartUnit || 'wn';   // 'wn' matches the book's axis
 function setChartUnit(u) {
   window.chartUnit = u;
   if (window._curId) showCompound(window._curId);
+}
+function syncAxisToggle(anyChart) {
+  const box = document.getElementById('axisToggle');
+  if (box) box.style.display = anyChart ? 'block' : 'none';
+  for (const [id, u] of [['axisWn', 'wn'], ['axisNm', 'nm']]) {
+    const b = document.getElementById(id);
+    if (!b) continue;
+    const on = window.chartUnit === u;
+    b.style.fontWeight = on ? '700' : '400';
+    b.style.background = on ? 'var(--pcc-navy, #1E3B96)' : '';
+    b.style.color = on ? '#fff' : '';
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
 }
 function drawChart(canvasId, tipId, wrapId, wl, vals, color, label) {
   if (window.chartUnit === 'wn') {
@@ -809,7 +833,11 @@ function drawChart(canvasId, tipId, wrapId, wl, vals, color, label) {
       const dd = Math.abs(wl[i] - dataX);
       if (dd < minD) { minD = dd; closest = i; }
     }
-    tip.textContent = wl[closest] + ' nm — ' + vals[closest].toFixed(3);
+    // wl[] holds whatever unit the axis is in — labelling it 'nm' in the
+    // default cm-1 mode reported wavenumbers as wavelengths
+    tip.textContent = (window.chartUnit === 'wn'
+      ? Math.round(wl[closest]) + ' cm⁻¹'
+      : wl[closest].toFixed(1) + ' nm') + ' — ' + vals[closest].toFixed(3);
     tip.style.display = 'block';
     tip.style.left = (e.clientX - wrap.getBoundingClientRect().left + 12) + 'px';
     tip.style.top = (e.clientY - wrap.getBoundingClientRect().top - 20) + 'px';
@@ -818,6 +846,9 @@ function drawChart(canvasId, tipId, wrapId, wl, vals, color, label) {
 }
 
 buildSidebar();
-// Auto-select first compound
-showCompound(ORDER[0]);
+// Deep link.  The browser editor's "← Viewer" button and the local app both
+// hand back ?gid=…; the viewer used to drop it and always open the first
+// compound, so every return trip landed on BENZENE.
+const _qgid = new URLSearchParams(location.search).get('gid');
+showCompound(ORDER.includes(_qgid) ? _qgid : ORDER[0]);
 </script>

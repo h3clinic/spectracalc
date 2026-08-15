@@ -36,8 +36,14 @@ SCAN_QUALITY = 82
 DL_WIRE = """  {
     const dc = document.getElementById('dlCsvBtn');
     const dx = document.getElementById('dlXlsxBtn');
+    // pages whose calibration was rejected publish no curves, so there is no
+    // workbook to link — say so rather than hand out a 404
+    const hasData = !!(d.em || d.ab);
     if (dc) dc.href = 'downloads/csv/' + d.graph + '.csv';
-    if (dx) dx.href = 'downloads/xlsx/' + d.graph + '.xlsx';
+    if (dx) {
+      dx.href = hasData ? 'downloads/xlsx/' + d.graph + '.xlsx' : '';
+      dx.style.display = hasData ? '' : 'none';
+    }
   }"""
 
 
@@ -94,12 +100,24 @@ def build_downloads(spectra, order):
                     f"{ai[i]:.6f}" if i < len(ai) else "",
                 ])
 
-    copied = 0
+    # Build the workbooks from the canonical dataset rather than copying
+    # data/spectra/ — those were written by an earlier regen and had drifted
+    # to an integer-nm grid, so the site was serving a fresh 0.1 nm CSV and a
+    # stale Excel for the same compound.  Worst case, a page whose calibration
+    # the pipeline REJECTED still had a populated workbook.
+    sys.path.insert(0, os.path.expanduser("~/onepager/berlman_digitization/app"))
+    from main import _library_xlsx
+    built, withheld = 0, []
     for gid in order:
-        src = glob.glob(os.path.join(ROOT, "data", "spectra", f"*__{gid}.xlsx"))
-        if src:
-            shutil.copy(src[0], os.path.join(xlsx_dir, gid + ".xlsx"))
-            copied += 1
+        s = spectra[gid]
+        if not (s.get("em") or s.get("ab")):
+            withheld.append(gid)          # no curves survived -> no workbook
+            continue
+        _library_xlsx(os.path.join(xlsx_dir, gid + ".xlsx"), gid, s)
+        built += 1
+    copied = built
+    if withheld:
+        print(f"  withheld (no calibrated curves): {', '.join(withheld)}")
     master = os.path.join(ROOT, "data", "Berlman_Master_Index.xlsx")
     if os.path.exists(master):
         shutil.copy(master, os.path.join(SITE, "downloads", "Berlman_Master_Index.xlsx"))

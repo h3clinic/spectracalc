@@ -1,0 +1,924 @@
+<title>SpectraWolf Digitization Report</title>
+<style>
+  :root {
+    --ink:        #14171c;
+    --ink-soft:   #4a5260;
+    --ink-faint:  #767f8e;
+    --paper:      #fbfaf8;
+    --surface:    #ffffff;
+    --rule:       #dcdfe6;
+    --rule-soft:  #eaecf1;
+    --navy:       #1e3b96;
+    --navy-soft:  #e8ecf9;
+    --emission:   #b03426;
+    --absorption: #1a7a43;
+    --amber:      #9a6a04;
+    --amber-soft: #fdf4e0;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  :root:not([data-theme="light"]) {
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:        #e6e8ec;
+      --ink-soft:   #a8b0bd;
+      --ink-faint:  #7c8492;
+      --paper:      #14161a;
+      --surface:    #1b1e24;
+      --rule:       #333842;
+      --rule-soft:  #262a31;
+      --navy:       #8fa8f0;
+      --navy-soft:  #1d2440;
+      --emission:   #e8705f;
+      --absorption: #4fc07d;
+      --amber:      #e0b155;
+      --amber-soft: #2a2314;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:        #e6e8ec;
+    --ink-soft:   #a8b0bd;
+    --ink-faint:  #7c8492;
+    --paper:      #14161a;
+    --surface:    #1b1e24;
+    --rule:       #333842;
+    --rule-soft:  #262a31;
+    --navy:       #8fa8f0;
+    --navy-soft:  #1d2440;
+    --emission:   #e8705f;
+    --absorption: #4fc07d;
+    --amber:      #e0b155;
+    --amber-soft: #2a2314;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 24px 96px;
+  }
+  @media (min-width: 1040px) {
+    .wrap { grid-template-columns: 218px minmax(0, 1fr); gap: 56px; padding-right: 40px; }
+  }
+
+  /* ── masthead ─────────────────────────────────────────── */
+  header.top {
+    grid-column: 1 / -1;
+    padding: 72px 0 40px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 48px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(2.3rem, 5.2vw, 3.5rem);
+    line-height: 1.06;
+    letter-spacing: -.015em;
+    margin: 0 0 20px;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-family: var(--serif);
+    font-size: clamp(1.05rem, 2vw, 1.28rem);
+    line-height: 1.55;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .byline {
+    margin-top: 26px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+  }
+
+  /* ── section rail ─────────────────────────────────────── */
+  nav.rail { display: none; }
+  @media (min-width: 1040px) {
+    nav.rail {
+      display: block;
+      position: sticky;
+      top: 32px;
+      align-self: start;
+      max-height: calc(100vh - 64px);
+      overflow-y: auto;
+      padding-bottom: 24px;
+    }
+  }
+  nav.rail p {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 12px;
+  }
+  nav.rail ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  nav.rail a {
+    display: block;
+    padding: 5px 10px 5px 12px;
+    font-size: 13.2px;
+    color: var(--ink-soft);
+    text-decoration: none;
+    border-left: 2px solid var(--rule);
+    line-height: 1.35;
+  }
+  nav.rail a:hover { color: var(--navy); border-left-color: var(--navy); background: var(--rule-soft); }
+  nav.rail a:focus-visible { outline: 2px solid var(--navy); outline-offset: 1px; }
+  nav.rail .num {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    margin-right: 7px;
+  }
+
+  main { min-width: 0; }
+
+  /* ── sections ─────────────────────────────────────────── */
+  section { margin-bottom: 60px; scroll-margin-top: 24px; }
+  .stage-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin: 0 0 8px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .stage-num {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--navy);
+    letter-spacing: .06em;
+    flex-shrink: 0;
+    padding-top: 4px;
+  }
+  h2 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(1.5rem, 3vw, 1.95rem);
+    letter-spacing: -.012em;
+    line-height: 1.2;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--sans);
+    font-size: 1rem;
+    font-weight: 650;
+    letter-spacing: -.005em;
+    margin: 30px 0 8px;
+  }
+  p { margin: 0 0 15px; max-width: 68ch; }
+  a { color: var(--navy); }
+  strong { font-weight: 640; }
+  code {
+    font-family: var(--mono);
+    font-size: .875em;
+    background: var(--rule-soft);
+    padding: 1.5px 5px;
+    border-radius: 3px;
+    word-break: break-word;
+  }
+  ul, ol.body { max-width: 68ch; padding-left: 20px; margin: 0 0 15px; }
+  li { margin-bottom: 7px; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 12.6px;
+    line-height: 1.55;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--navy);
+    border-radius: 0 5px 5px 0;
+    padding: 13px 16px;
+    overflow-x: auto;
+    margin: 0 0 16px;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  /* ── figure ───────────────────────────────────────────── */
+  figure { margin: 26px 0; }
+  figure svg { display: block; width: 100%; max-width: 100%; height: auto; }
+  figcaption {
+    font-size: 13px;
+    color: var(--ink-faint);
+    margin-top: 10px;
+    max-width: 68ch;
+    line-height: 1.5;
+  }
+  .fig-frame {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 22px 18px;
+    overflow-x: auto;
+  }
+
+  /* ── tables ───────────────────────────────────────────── */
+  .tscroll { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--rule); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.6px; background: var(--surface); }
+  th, td { padding: 8px 13px; text-align: left; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  th {
+    font-family: var(--mono);
+    font-size: 10.8px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+    background: var(--rule-soft);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .gid { font-family: var(--mono); font-size: 12.4px; white-space: nowrap; }
+
+  /* ── callouts ─────────────────────────────────────────── */
+  .note {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--ink-faint);
+    background: var(--surface);
+    border-radius: 0 5px 5px 0;
+    padding: 14px 17px;
+    margin: 0 0 18px;
+    max-width: 68ch;
+  }
+  .note.why { border-left-color: var(--navy); background: var(--navy-soft); }
+  .note.open { border-left-color: var(--amber); background: var(--amber-soft); }
+  .note p:last-child { margin-bottom: 0; }
+  .note .tag {
+    display: block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 6px;
+  }
+  .note.why .tag { color: var(--navy); }
+  .note.open .tag { color: var(--amber); }
+
+  /* ── stat strip ───────────────────────────────────────── */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 0 0 22px;
+  }
+  .stat { background: var(--surface); padding: 13px 15px; }
+  .stat .v {
+    font-family: var(--mono);
+    font-size: 21px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -.02em;
+    display: block;
+    line-height: 1.15;
+  }
+  .stat .k {
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    margin-top: 4px;
+    display: block;
+    line-height: 1.35;
+  }
+  .stat.em .v { color: var(--emission); }
+  .stat.ab .v { color: var(--absorption); }
+
+  .pill {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .05em;
+    padding: 2px 7px;
+    border-radius: 3px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+  .pill.ok    { color: var(--absorption); }
+  .pill.warn  { color: var(--amber); }
+  .pill.stop  { color: var(--emission); }
+
+  footer.end {
+    grid-column: 1 / -1;
+    margin-top: 40px;
+    padding-top: 22px;
+    border-top: 2px solid var(--ink);
+    font-size: 13px;
+    color: var(--ink-faint);
+    max-width: 68ch;
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Technical Report · SpectraWolf</p>
+  <h1>Reading 308 spectra off a 1971 book</h1>
+  <p class="standfirst">
+    How a scanned page of Berlman's <em>Handbook of Fluorescence Spectra of
+    Aromatic Molecules</em> becomes a monotone, single-valued curve on a
+    0.1&nbsp;nm grid — the frame geometry, the axis calibration, the tracing,
+    the corrections, and the two editors that let a person fix what the
+    machine missed.
+  </p>
+  <p class="byline">
+    <span>308 plates · 608 curves · 700,817 points</span>
+    <span>Engine: <code>berlman.py</code></span>
+    <span>Live: spectrawolf.vercel.app</span>
+  </p>
+</header>
+
+<nav class="rail" aria-label="Sections">
+  <p>Contents</p>
+  <ol>
+    <li><a href="#overview"><span class="num">—</span>What the system does</a></li>
+    <li><a href="#s1"><span class="num">01</span>Source &amp; rasterization</a></li>
+    <li><a href="#s2"><span class="num">02</span>Frame &amp; axis calibration</a></li>
+    <li><a href="#s3"><span class="num">03</span>Isolation &amp; tracing</a></li>
+    <li><a href="#s4"><span class="num">04</span>Refinement passes</a></li>
+    <li><a href="#s5"><span class="num">05</span>Pixels to physical curve</a></li>
+    <li><a href="#s6"><span class="num">06</span>Validation</a></li>
+    <li><a href="#s7"><span class="num">07</span>The two editors</a></li>
+    <li><a href="#s8"><span class="num">08</span>Platform &amp; data products</a></li>
+    <li><a href="#limits"><span class="num">—</span>Limits &amp; open issues</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="overview">
+  <div class="stage-head"><h2>What the system does</h2></div>
+  <p>
+    Berlman's Handbook prints each compound's fluorescence and absorption
+    spectra as ink curves inside a ruled box, with a wavenumber axis along the
+    bottom and a wavelength axis along the top. Nothing about that page is
+    machine-readable: there are no coordinates, no data, only ink. The system
+    recovers the numbers by finding the box, reading the printed tick labels to
+    calibrate the axes, following the ink, and pushing the traced pixels back
+    through that calibration.
+  </p>
+  <div class="stats">
+    <div class="stat"><span class="v">308</span><span class="k">plates digitized</span></div>
+    <div class="stat em"><span class="v">305</span><span class="k">emission curves, all peaking at exactly 1.0</span></div>
+    <div class="stat ab"><span class="v">285</span><span class="k">absorption curves, 281 at exactly 1.0</span></div>
+    <div class="stat"><span class="v">0.973</span><span class="k">mean trace F1 (median 0.989)</span></div>
+    <div class="stat"><span class="v">0.1 nm</span><span class="k">export grid</span></div>
+  </div>
+  <p>
+    The whole chain is deterministic image processing — thresholds, morphology,
+    robust line fits, column walks. There is no machine learning anywhere in
+    it, including the "auto-trace" tool in the editors, which follows actual
+    ink pixels between points a person clicks.
+  </p>
+
+  <figure>
+    <div class="fig-frame">
+      <svg viewBox="0 0 940 300" role="img" aria-label="Pipeline from PDF page through rasterization, binarization, frame detection, axis calibration, curve isolation, tracing, refinement and physical conversion to the published dataset, with the frozen calibration feeding both the round-trip check and the browser editor.">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+          </marker>
+          <marker id="ahn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#1e3b96"/>
+          </marker>
+        </defs>
+
+        <g font-family="ui-monospace, monospace" font-size="11.5" fill="currentColor">
+          <!-- row 1 -->
+          <rect x="8"   y="34" width="118" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+          <text x="67" y="52" text-anchor="middle">PDF page</text>
+          <text x="67" y="68" text-anchor="middle" font-size="10" opacity=".7">800 ppi, 1-bit</text>
+
+          <rect x="176" y="34" width="118" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+          <text x="235" y="52" text-anchor="middle">raster</text>
+          <text x="235" y="68" text-anchor="middle" font-size="10" opacity=".7">5400×3600</text>
+
+          <rect x="344" y="34" width="118" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+          <text x="403" y="52" text-anchor="middle">ink mask</text>
+          <text x="403" y="68" text-anchor="middle" font-size="10" opacity=".7">Otsu, per page</text>
+
+          <rect x="512" y="34" width="130" height="44" rx="4" fill="none" stroke="#1e3b96" stroke-width="1.5"/>
+          <text x="577" y="52" text-anchor="middle" fill="#1e3b96">frame + axes</text>
+          <text x="577" y="68" text-anchor="middle" font-size="10" fill="#1e3b96" opacity=".8">tick OCR → a, b</text>
+
+          <line x1="126" y1="56" x2="170" y2="56" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+          <text x="148" y="48" text-anchor="middle" font-size="9.5" opacity=".7">pdftoppm</text>
+          <line x1="294" y1="56" x2="338" y2="56" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+          <line x1="462" y1="56" x2="506" y2="56" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+
+          <!-- row 2 -->
+          <rect x="8"   y="146" width="118" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+          <text x="67" y="164" text-anchor="middle">isolate</text>
+          <text x="67" y="180" text-anchor="middle" font-size="10" opacity=".7">curve ink only</text>
+
+          <rect x="176" y="146" width="118" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+          <text x="235" y="164" text-anchor="middle">trace ×4</text>
+          <text x="235" y="180" text-anchor="middle" font-size="10" opacity=".7">best F1 wins</text>
+
+          <rect x="344" y="146" width="118" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+          <text x="403" y="164" text-anchor="middle">refine</text>
+          <text x="403" y="180" text-anchor="middle" font-size="10" opacity=".7">split · lift · cull</text>
+
+          <rect x="512" y="146" width="130" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+          <text x="577" y="164" text-anchor="middle">physical</text>
+          <text x="577" y="180" text-anchor="middle" font-size="10" opacity=".7">nm · 0.1 grid</text>
+
+          <rect x="692" y="146" width="130" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="1.6"/>
+          <text x="757" y="164" text-anchor="middle">dataset</text>
+          <text x="757" y="180" text-anchor="middle" font-size="10" opacity=".7">608 curves</text>
+
+          <line x1="126" y1="168" x2="170" y2="168" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+          <line x1="294" y1="168" x2="338" y2="168" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+          <line x1="462" y1="168" x2="506" y2="168" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+          <line x1="642" y1="168" x2="686" y2="168" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+
+          <!-- wrap from row1 to row2 -->
+          <path d="M577 78 L577 108 L67 108 L67 140" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+          <text x="322" y="103" text-anchor="middle" font-size="9.5" opacity=".7">frame bounds the search region</text>
+
+          <!-- frozen calibration feeds physical + downstream -->
+          <path d="M642 56 L830 56 L830 140" fill="none" stroke="#1e3b96" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ahn)"/>
+          <text x="838" y="100" font-size="9.5" fill="#1e3b96">frozen</text>
+          <text x="838" y="112" font-size="9.5" fill="#1e3b96">calibration</text>
+
+          <!-- outputs -->
+          <rect x="622" y="238" width="132" height="40" rx="4" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".85"/>
+          <text x="688" y="255" text-anchor="middle" font-size="11">round-trip check</text>
+          <text x="688" y="269" text-anchor="middle" font-size="9.5" opacity=".7">dots back on ink</text>
+
+          <rect x="790" y="238" width="132" height="40" rx="4" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".85"/>
+          <text x="856" y="255" text-anchor="middle" font-size="11">browser editor</text>
+          <text x="856" y="269" text-anchor="middle" font-size="9.5" opacity=".7">rebuilds the dots</text>
+
+          <path d="M757 190 L757 232" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+          <path d="M790 210 L856 210 L856 232" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+          <path d="M757 210 L688 210 L688 232" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
+        </g>
+      </svg>
+    </div>
+    <figcaption>
+      The calibration (dashed) is computed once per page and then frozen into
+      the dataset. Everything downstream — the published wavelengths, the
+      round-trip check, and the browser editor that reconstructs dot positions
+      from published numbers — reuses that same fit, which is why the editor
+      needs no digitizer of its own.
+    </figcaption>
+  </figure>
+</section>
+
+<section id="s1">
+  <div class="stage-head"><span class="stage-num">01</span><h2>Source and rasterization</h2></div>
+  <p>
+    There is no cropping step, and that is a finding rather than an omission.
+    The source is a single PDF of the Handbook in which each plate is already
+    one page: <code>pdfimages</code> shows exactly one embedded image per graph
+    page, 7457×4947, 1-bit, CCITT&nbsp;G4, at 800&nbsp;ppi. The plates arrive
+    pre-separated and pre-aligned, so any hand-rolled crop would only
+    reintroduce registration error.
+  </p>
+  <p>
+    <code>render_pages()</code> shells out to poppler once for the whole book:
+  </p>
+<pre><code>subprocess.run(["pdftoppm", "-f", str(lo), "-l", str(hi), "-r", str(dpi),
+                "-png", pdf, os.path.join(pages_dir, "graph")], check=True)</code></pre>
+  <p>
+    Rendering rather than extracting is deliberate. <code>pdfimages</code>
+    would return the raw bilevel scan in its own coordinate frame, ignoring the
+    page rotation and placement matrix; letting pdftoppm compose the page
+    applies both uniformly, which is what makes 5400×3600 an invariant the rest
+    of the system can assume. Downsampling 800&nbsp;ppi to 600 also anti-aliases
+    the 1-bit ink into a gray ramp — which is precisely what gives Otsu
+    something to threshold.
+  </p>
+
+  <h3>Why pages 124–431</h3>
+  <p>
+    The page range is not a guess. <code>pdfinfo</code> reports the graph
+    plates as the contiguous block of rotated pages: page 123 is unrotated, 124
+    through 431 are rotated, and 432 is unrotated again. That block is exactly
+    308 pages, matching the file count with no gaps. (290 are rotated 90° and
+    18 are rotated 270°; both render landscape.)
+  </p>
+  <div class="note why">
+    <span class="tag">Why it matters</span>
+    <p>
+      Page width is the sole input to <code>_set_scale()</code>, which sets a
+      module-global <code>_SCALE = width_px / 2700</code>. Every pixel constant
+      in the engine is authored at 300&nbsp;DPI and multiplied up through
+      <code>_s()</code>. If an unrotated page leaked into the range its width
+      would be 3600 instead of 5400, <code>_SCALE</code> would come out 1.33
+      instead of 2.0, and every kernel and tolerance on that page would be
+      silently a third too small.
+    </p>
+  </div>
+
+  <h3>Binarization</h3>
+  <p>
+    <code>load_binary()</code> is five lines: grayscale decode, then Otsu with
+    inverted polarity so ink&nbsp;=&nbsp;255. The threshold is recomputed per
+    page — a fixed cut cannot survive 308 plates whose paper yellowing and
+    exposure vary across the life of a 1971 print run. On <span class="gid">graph-124</span>
+    Otsu picks 132 with 2.78% ink; on <span class="gid">graph-372</span>, 135
+    with 2.25%.
+  </p>
+</section>
+
+<section id="s2">
+  <div class="stage-head"><span class="stage-num">02</span><h2>Frame detection and axis calibration</h2></div>
+  <p>
+    <code>detect_frame()</code> recovers the plot box by morphological line
+    extraction — the borders are the only long straight runs on the page, since
+    curves aren't straight and text is short. Selection is region-based (one
+    line per image half) rather than global, which is what survives a border
+    partly broken where a curve crosses it.
+  </p>
+  <p>
+    The x-axis is then calibrated by OCR-ing the printed wavenumber tick labels
+    and fitting pixel&nbsp;→&nbsp;wavenumber as a straight line. This is the
+    single most consequential number in the system: it sets every wavelength
+    that ever gets published.
+  </p>
+
+  <div class="note">
+    <span class="tag">The bug that shifted 26 pages</span>
+    <p>
+      The fit is Theil–Sen, chosen for robustness against a misread tick. But
+      SciPy's implementation anchors the intercept at
+      <code>median(y) − slope·median(x)</code> — so a tick misread <em>at the
+      median position</em> corrupts the intercept even though the slope
+      survives. The trimming pass then made it worse: it tested residuals
+      against zero rather than against the residual median, so it trimmed the
+      good ticks and kept the bad one. Roughly 26 pages were silently shifted
+      by hundreds to thousands of cm⁻¹ — the curves looked perfect, and every
+      wavelength was wrong.
+    </p>
+    <p>
+      The fix re-centres the intercept on the median residual and trims around
+      that median. Two guards were added on top: an RMSE gate that rejects any
+      fit worse than 150&nbsp;cm⁻¹, and a cross-check against the
+      <em>top</em> wavelength axis (wavenumber = 10⁸/Å), with
+      <code>_calibrate_x_from_top()</code> as fallback.
+    </p>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><span class="v">305</span><span class="k">pages with an accepted fit</span></div>
+    <div class="stat"><span class="v">304 / 1</span><span class="k">from the bottom axis / top-axis fallback</span></div>
+    <div class="stat"><span class="v">38.2</span><span class="k">mean RMSE, cm⁻¹ (median 35.9)</span></div>
+    <div class="stat"><span class="v">129.7</span><span class="k">worst accepted RMSE, against a 150 gate</span></div>
+  </div>
+  <p>
+    Three pages fail the gate outright and are published with no curves at all
+    rather than with wrong ones — see <a href="#limits">Limits</a>.
+  </p>
+</section>
+
+<section id="s3">
+  <div class="stage-head"><span class="stage-num">03</span><h2>Curve isolation and tracing</h2></div>
+  <p>
+    <code>isolate_curves()</code> strips the frame, ticks, chemical structure
+    diagram and legend text, leaving curve ink. Four tracing strategies then
+    compete on every page: a skeleton-graph trace, an overlap-resolved variant
+    of it, a columnar extractor, and a parallel-curve extractor.
+  </p>
+  <p>
+    Each candidate is scored by <code>evaluate()</code>, which rebuilds the
+    traced curve into a mask and compares it against the isolated ink with a
+    distance transform, tolerance <code>_s(4)</code> — 8&nbsp;px at 600&nbsp;DPI.
+    That is what the reported F1 measures: <strong>agreement between the trace
+    and the ink it came from</strong>, not agreement with any external truth.
+    Strategy selection maximizes <code>F1 + 0.3 × column_coverage</code>, and if
+    the best score falls below 1.2 the page is re-binarized under a sweep of
+    adaptive and fixed thresholds and retried.
+  </p>
+  <div class="note why">
+    <span class="tag">What F1 does and doesn't tell you</span>
+    <p>
+      A high F1 means the trace sits on the printed line. It cannot detect a
+      calibration error — a perfectly traced curve on a mis-calibrated axis
+      scores just as well. Those two failure modes are independent, which is
+      why calibration has its own gate and its own cross-check, and why the
+      round-trip image exists.
+    </p>
+  </div>
+</section>
+
+<section id="s4">
+  <div class="stage-head"><span class="stage-num">04</span><h2>Refinement passes</h2></div>
+  <p>
+    A raw trace is rarely publishable. The refinement chain runs in this order
+    inside <code>digitize()</code>: <code>_split_swallowed</code> →
+    <code>_refine_curves</code> → spike handling → <code>_trace_dotted_tail</code>
+    → <code>_label_guided_fix</code> → <code>_role_hygiene</code>. Each pass
+    exists because of a specific way pages fail.
+  </p>
+  <div class="tscroll">
+    <table>
+      <thead><tr><th>Pass</th><th>What it fixes</th><th>Mechanism</th></tr></thead>
+      <tbody>
+        <tr><td><code>_split_swallowed</code></td><td>Two mirror-image curves traced as one</td><td>Finds valleys below 0.09 intensity at least <code>_s(12)</code> wide with real mass on both sides, splits at the midpoint</td></tr>
+        <tr><td><code>_refine_curves</code></td><td>Dropouts and stray points</td><td>Lifts points onto ink with a raw-pixel probe, fills gaps bidirectionally, prunes near-baseline clusters</td></tr>
+        <tr><td><code>_trace_dotted_tail</code></td><td>Tails printed as dots, not a line</td><td>Mirror-slope projection, validated by requiring the end intensity below 0.10</td></tr>
+        <tr><td><code>_label_guided_fix</code></td><td>A peak carved away by the legend text</td><td>Fires only when the raw maximum is under 0.9 and the carve-out peak reaches 0.9</td></tr>
+        <tr><td><code>_role_hygiene</code></td><td>Points stolen across a crossing</td><td>Two wide-window (30&nbsp;px) local-median passes cull points closer to the other curve's track, with an apex guard so needles survive</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The apex guard is a good example of the tuning loop: the first version of
+    <code>_role_hygiene</code> correctly removed a 15-point chord that had
+    bled between curves on one page, and then removed a legitimate needle peak
+    on another. The guard (<code>y ≤ apex_y + _s(14)</code>) keeps the cull from
+    reaching the top of a curve.
+  </p>
+</section>
+
+<section id="s5">
+  <div class="stage-head"><span class="stage-num">05</span><h2>From pixels to the published curve</h2></div>
+  <p>
+    Every traced dot is a pair of page pixels. The published curve is a
+    monotone, single-valued series on a 0.1&nbsp;nm grid. Four operations get
+    from one to the other, in order.
+  </p>
+
+  <h3>1 · Pixel to wavenumber to wavelength</h3>
+<pre><code>wn = xcal["a"] * px + xcal["b"]      # frozen per-page fit
+wl = 1e7 / wn                        # cm⁻¹ → nm
+inten = (y_bottom - py) / (y_bottom - y_top)</code></pre>
+
+  <h3>2 · Apex-local peak restoration</h3>
+  <p>
+    Berlman normalizes every spectrum to a peak of 1.0, so the digitized curve
+    should too. The obvious approach — divide the whole curve by its maximum —
+    is wrong, and visibly so: it lifts <em>every</em> point by the same factor,
+    floating the entire trace roughly 1.5% above the printed ink. The
+    round-trip image made that immediately obvious.
+  </p>
+  <p>
+    Instead only the top 2% band is stretched, so the peak reaches exactly 1.0
+    while the rest of the curve stays where the ink is:
+  </p>
+<pre><code>if 0.96 &lt;= mx &lt; 1.0:
+    band_lo = mx - 0.02
+    sel = inten &gt; band_lo
+    inten[sel] = band_lo + (inten[sel] - band_lo) * ((1.0 - band_lo) / (mx - band_lo))</code></pre>
+
+  <h3>3 · 0.1 nm dedup-averaging</h3>
+  <p>
+    Traced dots are per pixel column, and on a steep flank many columns land in
+    one wavelength bin — so the raw series is multi-valued. Binning to 0.1&nbsp;nm
+    and averaging fixes that, with one exception: the bin holding the global
+    peak keeps the apex value rather than the mean, or averaging would round the
+    needle off and the peak would no longer be 1.0.
+  </p>
+
+  <h3>4 · Print-break bridging</h3>
+  <p>
+    Some plates have genuine breaks where the press left paper blank. Gaps up
+    to 5.0&nbsp;nm are linearly bridged so the exported curve is continuous.
+    The ceiling is a hard cutoff — a 4.9&nbsp;nm break is filled and a
+    5.2&nbsp;nm one is not — and 24 of the 608 curves retain a gap above it,
+    the largest 44.3&nbsp;nm. All 608 are strictly monotonic in wavelength.
+  </p>
+</section>
+
+<section id="s6">
+  <div class="stage-head"><span class="stage-num">06</span><h2>Validation</h2></div>
+  <p>
+    Validation runs on two independent axes, because the two failure modes are
+    independent.
+  </p>
+  <h3>Round-trip: does the exported data land on the ink?</h3>
+  <p>
+    The final exported numbers — the same ones in the CSV and the Excel file —
+    are pushed <em>back</em> through the inverse of the frozen calibration and
+    replotted as dots on the raw scan. If the whole chain is sound the dots sit
+    on the printed line; any wavelength error shows up as horizontal
+    displacement. Measured on a sample page, the median gray level directly
+    under a dot is 0 — pure ink — with 94% of emission and 91% of absorption
+    dots landing on the line, the remainder on the thin flanks between.
+  </p>
+  <p>
+    This is the check that caught the global-rescale error, the colour
+    mix-ups, and the calibration shifts. 305 of the 308 pages are under
+    round-trip test; the 3 uncalibrated pages have nothing to replot.
+  </p>
+
+  <h3>Trace agreement</h3>
+  <div class="stats">
+    <div class="stat"><span class="v">0.973</span><span class="k">mean F1</span></div>
+    <div class="stat"><span class="v">0.989</span><span class="k">median F1</span></div>
+    <div class="stat"><span class="v">292</span><span class="k">pages at F1 ≥ 0.90</span></div>
+    <div class="stat"><span class="v">8</span><span class="k">pages below 0.85</span></div>
+  </div>
+
+  <h3>External cross-check</h3>
+  <p>
+    Twelve compounds were compared against PhotoChemCAD reference spectra:
+    emission mean <em>r</em> = 0.874 (n&nbsp;=&nbsp;12), absorption mean
+    <em>r</em> = 0.920 (n&nbsp;=&nbsp;7), median peak difference 90&nbsp;cm⁻¹.
+    Benzene emission reached <em>r</em> = 0.9997 with zero peak offset.
+  </p>
+  <div class="note open">
+    <span class="tag">Stale — flagged, not fixed</span>
+    <p>
+      That cross-check was run against the <em>first</em> 300&nbsp;DPI pass,
+      whose mean F1 was 0.94. The shipped dataset is the 600&nbsp;DPI
+      regeneration at mean F1 0.973. Nothing in the repository currently
+      cross-checks the numbers that actually ship against an external
+      reference — the correlations above should be read as a floor, not as a
+      measurement of the current data.
+    </p>
+  </div>
+</section>
+
+<section id="s7">
+  <div class="stage-head"><span class="stage-num">07</span><h2>The two editors</h2></div>
+  <p>
+    Automation gets most pages right and cannot get all of them right. Both
+    editors exist so a person can correct a curve directly on the scan, with
+    every downstream artifact following.
+  </p>
+
+  <h3>Local editor — FastAPI, port 8770</h3>
+  <p>
+    Runs the real digitizer. Opening a page digitizes it (cached to disk, with
+    an LRU that never evicts a hand-edited page), and <strong>Save</strong>
+    writes the edit through the whole chain: the canonical dataset, the
+    per-page CSVs, that compound's Excel workbook, the round-trip overlay, both
+    viewers' inlined data, the editor's own cache, and a background rebuild of
+    the master index. Every large write is atomic — tmp file plus rename — and
+    a save that cannot reach any canonical copy returns an error rather than
+    reporting success and republishing pre-edit data.
+  </p>
+
+  <h3>Browser editor — no server at all</h3>
+  <p>
+    The deployed site is static, so the browser editor cannot digitize
+    anything. It doesn't need to: it reconstructs each dot by pushing the
+    <em>published</em> numbers back through the frozen calibration — the same
+    inverse transform that draws the round-trip image — and lays them over a
+    clean page scan. Re-deriving data from those reconstructed dots returns the
+    published numbers to floating-point epsilon (1.7×10⁻¹⁶).
+  </p>
+
+  <h3>Tools shared by both</h3>
+  <ul>
+    <li><strong>Auto-trace</strong> — click a few points along missed ink and the
+      run between them is followed pixel by pixel. Deterministic, no model.
+      In the browser it walks an Otsu-thresholded bitmap of the scan; hops up
+      to ~100&nbsp;px land within 1% of the printed line 94–96% of the time,
+      degrading to 76% at 400&nbsp;px, so a long hop warns you.</li>
+    <li><strong>Colour-scoped eraser</strong> — a capsule sweep that removes only
+      the selected curve's colour, so a swipe through a crossing leaves the
+      other spectrum untouched. Switchable to all-curves.</li>
+    <li><strong>History</strong> — a snapshot timeline; any earlier state can be
+      restored directly, and editing from an earlier step drops the abandoned
+      future.</li>
+  </ul>
+  <div class="note why">
+    <span class="tag">Why the browser tracer is the weaker one</span>
+    <p>
+      The local app walks the isolated curve mask at full resolution. The
+      browser walks a 2000-px-wide WebP of the whole page, so it sees the axes
+      and legend text as ink too, and its stroke width is ~2&nbsp;px rather
+      than ~7. It compensates by following the curve's own trajectory and by
+      penalizing the other curves' known tracks at crossings, but near-vertical
+      flanks remain its weakest case.
+    </p>
+  </div>
+</section>
+
+<section id="s8">
+  <div class="stage-head"><span class="stage-num">08</span><h2>Platform and data products</h2></div>
+  <p>
+    The public site is a static PhotochemCAD-style viewer: the whole dataset is
+    inlined into one HTML file, charts are drawn on a device-pixel-ratio-scaled
+    canvas, and the axis can be toggled between cm⁻¹ (as the book prints it) and
+    nm. Ticks are anchored to round values and the y-axis is ruled every 0.1, so
+    a reader can check the digitization against the scan above it.
+  </p>
+  <p>
+    The build shrinks the deliverable rather than the data: 308 round-trip
+    overlays at 5400×3600 (~150&nbsp;MB of PNG) become 2400-px WebP at
+    34.7&nbsp;MB, and 308 clean scans become 22.2&nbsp;MB. Per-compound data is
+    split into individual JSON files so the editor fetches ~30&nbsp;KB instead
+    of an 11&nbsp;MB blob.
+  </p>
+  <div class="tscroll">
+    <table>
+      <thead><tr><th>Product</th><th class="num">Scale</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>spectra_all.json</code></td><td class="num">608 curves</td><td>Canonical. Carries the frozen <code>xcal</code> per page</td></tr>
+        <tr><td>Per-compound CSV</td><td class="num">308 files</td><td>0.1 nm grid, emission + absorption columns</td></tr>
+        <tr><td>Per-compound Excel</td><td class="num">305 files</td><td>Data plus a red/green scatter chart</td></tr>
+        <tr><td>Master index</td><td class="num">14.3 MB</td><td>Index sheet plus 428,117 emission and 251,985 absorption rows</td></tr>
+        <tr><td>Round-trip overlays</td><td class="num">308 images</td><td>The validation surface, one per page</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note">
+    <span class="tag">Fixed during this audit</span>
+    <p>
+      304 of the 308 per-compound workbooks were stale — written by an earlier
+      regeneration on an integer-nm grid, while the CSVs were being generated
+      fresh from the canonical dataset. The site was handing out a correct CSV
+      and an outdated Excel file for the same compound. Worst case,
+      <span class="gid">graph-175</span> — a page whose calibration the
+      pipeline <em>rejects</em> — still shipped a populated workbook of
+      withheld data. Workbooks are now generated from the canonical dataset at
+      build time, and the three uncalibrated pages produce no workbook at all.
+    </p>
+  </div>
+</section>
+
+<section id="limits">
+  <div class="stage-head"><h2>Limits and open issues</h2></div>
+  <p>
+    Each of these is a deliberate refusal rather than an unfixed bug: the
+    calibration gate would rather publish nothing than publish a page whose
+    every wavelength is wrong.
+  </p>
+  <div class="tscroll">
+    <table>
+      <thead><tr><th>Pages</th><th>Issue</th><th>Disposition</th></tr></thead>
+      <tbody>
+        <tr><td class="gid">175, 289, 291</td><td>Axis labels unreadable; no calibration passes the gate</td><td><span class="pill stop">withheld</span> No curves published</td></tr>
+        <tr><td class="gid">396</td><td>Chrysene — coincident 0-0 bands, no principled split</td><td><span class="pill stop">withheld</span> Absorption only</td></tr>
+        <tr><td class="gid">235, 328, 342, 427</td><td>Partial vibronic absorption; peak below 1.0 (0.80, 0.72, 0.89, 0.42)</td><td><span class="pill warn">honest</span> Left un-normalized rather than fabricated</td></tr>
+        <tr><td class="gid">141, 216, 217, 342, 372</td><td>Mirror-interleaved curves; some role bleed at crossings</td><td><span class="pill warn">partial</span> Editor is the remedy</td></tr>
+        <tr><td class="gid">142, 290, 355</td><td>Dotted tails overlapping the other curve</td><td><span class="pill warn">partial</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Open issues found in this audit, not yet fixed</h3>
+  <ul>
+    <li><strong>18 secondary-emission curves are invisible in every tabular
+      product.</strong> The <code>em2</code> curves (20,717 points, on
+      CURVE&nbsp;I/II comparison pages) exist only in the JSON — the CSVs,
+      workbooks, master index and browser editor all handle just emission and
+      absorption. A user working from Excel sees no trace of them.</li>
+    <li><strong>Peak restoration is inconsistent between the two paths.</strong>
+      The batch engine guards the apex stretch by role so <code>em2</code> is
+      never snapped; the app's version applies the same stretch with no role
+      guard, so hand-editing an <code>em2</code> curve can snap it to 1.0 and
+      diverge from every batch-produced one.</li>
+    <li><strong>Eight pages ship below F1 0.85</strong> — <span class="gid">342, 380,
+      326, 373, 236, 170, 222, 200</span> — and only <span class="gid">342</span>
+      appears in the published limitations table.</li>
+    <li><strong>The README's coverage numbers are one regeneration stale</strong>
+      (it claims 306 emission / 286 absorption and names two uncalibrated
+      pages; the shipped figures are 305 / 285 and three).</li>
+    <li><strong>The batch regeneration and evaluation scripts are not in the
+      repository.</strong> They lived in session scratch space. The protocol
+      survives as prose and the per-page round-trip generator survives inside
+      the save path, but the batch run cannot currently be reproduced from a
+      clean checkout.</li>
+  </ul>
+</section>
+
+</main>
+
+<footer class="end">
+  <p>
+    Source spectra: Berlman, <em>Handbook of Fluorescence Spectra of Aromatic
+    Molecules</em>, 2nd ed. (Academic Press, 1971). Digitized measurements are
+    derived data; the underlying plates remain the publisher's copyright.
+    Figures in this report were verified against the source code and the
+    shipped dataset rather than taken from prior documentation.
+  </p>
+</footer>
+
+</div>
