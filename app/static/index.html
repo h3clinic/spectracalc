@@ -66,6 +66,20 @@ canvas#editor { position:absolute; top:0; left:0; }
 .count-card.ab .n { color:var(--absorption); }
 .count-card .lbl { font-size:10px; color:var(--text2); margin-top:2px; }
 
+.hbar { display:flex; gap:6px; margin-bottom:6px; }
+.hbar .btn { flex:1; justify-content:center; font-size:11.5px; padding:0 6px; }
+.hist { max-height:180px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; background:var(--bg); }
+.hrow {
+  width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--border);
+  color:var(--text); padding:5px 8px; cursor:pointer; display:flex; flex-direction:column; gap:1px;
+}
+.hrow:last-child { border-bottom:0; }
+.hrow:hover { background:var(--surface2); }
+.hrow.now { background:var(--accent); }
+.hrow.now .hmeta { color:#dce9fb; }
+.hrow.ahead { opacity:.45; }
+.hlabel { font-size:12px; }
+.hmeta { font-size:10px; color:var(--text2); }
 .legend { margin-top:16px; }
 .legend-item { display:flex; align-items:center; gap:8px; font-size:12px; margin-bottom:6px; }
 .legend-dot { width:10px; height:10px; border-radius:50%; }
@@ -312,6 +326,17 @@ body.browsing .toolrail { display:none; }
       <div class="count-card ab"><div class="n" id="abCount">0</div><div class="lbl">Absorption</div></div>
     </div>
 
+    <h3>History <span id="histPos" style="float:right;font-weight:400;text-transform:none;letter-spacing:0">—</span></h3>
+    <div class="hbar">
+      <button class="btn" onclick="undoAction()" title="Step back (Ctrl+Z)">↩ Back</button>
+      <button class="btn" onclick="redoAction()" title="Step forward (Ctrl+Shift+Z)">↪ Forward</button>
+    </div>
+    <div class="hist" id="histList"></div>
+    <div style="font-size:11.5px;color:var(--text2);line-height:1.5;margin:6px 0 16px">
+      Click any step to jump to that state. Editing from an earlier step drops
+      the steps after it.
+    </div>
+
     <h3>Legend</h3>
     <div class="legend">
       <div class="legend-item"><div class="legend-dot" style="background:var(--emission)"></div> Emission points</div>
@@ -356,7 +381,6 @@ let zoom = 1, panX = 0, panY = 0;
 let mode = 'pan';        // 'add' | 'erase' | 'pan'
 let activeIdx = 0;        // index into curves
 let curves = [];          // [{role, name, color, px[], py[]}]
-let undoStack = [];
 let appState = {};        // xcal, frame, frame_orig, scale, etc.
 let isPanning = false, panStartX = 0, panStartY = 0;
 
@@ -433,7 +457,7 @@ async function addWaypoint(ix, iy) {
     if (d.error) { showToast(d.error); return; }
     curve.px.push(...d.px);
     curve.py.push(...d.py);
-    undoStack.push({ type: 'autotrace', curveIdx: curves.indexOf(curve), count: d.px.length });
+    snapshot('Auto-trace', `${curve.name || curve.role} · +${d.px.length}`);
     showToast(`Auto-traced ${d.n} points along the ink`);
     updateInfo(); draw(); scheduleGenerate();
   } catch (e) { showToast('Auto-trace failed: ' + e.message); }
@@ -565,7 +589,6 @@ function loadResult(data) {
       px: c.px.map(x => x * data.scale),
       py: c.py.map(y => y * data.scale),
     }));
-  undoStack = [];
   newCurveCounter = 0;
 
   img = new Image();
@@ -579,6 +602,8 @@ function loadResult(data) {
     setActiveCurve(emi >= 0 ? emi : 0);
     document.getElementById('status').textContent = `${data.molecule || 'Spectrum'} — F1 ${data.f1}`;
     document.getElementById('btnSave').style.display = data.gid ? '' : 'none';
+    history = []; histAt = -1;
+    snapshot('Digitized', 'as traced');
     scheduleGenerate();   // build the initial output set
   };
   img.src = 'data:image/png;base64,' + data.image;
@@ -715,7 +740,7 @@ canvas.addEventListener('mousedown', e => {
     const curve = curves[activeIdx] || curves[0];
     curve.px.push(ix);
     curve.py.push(iy);
-    undoStack.push({ type: 'add', curveIdx: curves.indexOf(curve), x: ix, y: iy });
+    snapshot('Add dot', curve.name || curve.role);
     showToast(`Added ${curve.name || curve.role} point`);
     updateInfo();
     draw();
@@ -756,7 +781,8 @@ canvas.addEventListener('mouseup', () => {
     isErasing = false;
     lastErase = null;
     if (eraseBatch && eraseBatch.pts.length) {
-      undoStack.push(eraseBatch);
+      const ac = curves[activeIdx];
+      snapshot('Erase', `${eraseScope === 'all' ? 'all curves' : (ac ? (ac.name || ac.role) : '')} · -${eraseBatch.pts.length}`);
       showToast(`Erased ${eraseBatch.pts.length} points`);
       scheduleGenerate();
     }
@@ -785,7 +811,9 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Escape' && mode === 'auto' && waypoints.length) { waypoints = []; draw(); }
   else if (e.key === 'e' || e.key === 'E') setRole('emission');
   else if (e.key === 'a' || e.key === 'A') setRole('absorption');
+  else if (e.key === 'z' && (e.ctrlKey || e.metaKey) && e.shiftKey) { e.preventDefault(); redoAction(); }
   else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undoAction(); }
+  else if (e.key === 'y' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); redoAction(); }
   else if (e.key === '+' || e.key === '=') zoomIn();
   else if (e.key === '-') zoomOut();
   else if (e.key === '0') zoomFit();
@@ -793,33 +821,70 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Escape' && !document.fullscreenElement && library.length && !browseMode) enterBrowse();
 });
 
-// ── Undo ──
+// ── History ──
+// Snapshots rather than inverse-deltas: each entry holds the whole dot state,
+// so any earlier point in the session can be restored directly instead of
+// replaying a chain of undos.
+const HIST_MAX = 80;
+let history = [], histAt = -1;
+
+function snapshot(label, detail) {
+  // editing after stepping back discards the abandoned future, so the list
+  // always matches what is on screen
+  if (histAt < history.length - 1) history = history.slice(0, histAt + 1);
+  history.push({
+    label, detail: detail || '',
+    curves: curves.map(c => ({ px: c.px.slice(), py: c.py.slice() })),
+    activeIdx, t: Date.now(),
+  });
+  if (history.length > HIST_MAX) history.shift();
+  histAt = history.length - 1;
+  renderHistory();
+}
+
+function restoreState(i) {
+  const h = history[i];
+  if (!h) return;
+  h.curves.forEach((snap, ci) => {
+    if (!curves[ci]) return;
+    curves[ci].px = snap.px.slice();
+    curves[ci].py = snap.py.slice();
+  });
+  histAt = i;
+  activeIdx = Math.min(h.activeIdx, curves.length - 1);
+  renderChips(); renderHistory(); updateInfo(); draw(); scheduleGenerate();
+}
+
 function undoAction() {
-  if (!undoStack.length) return;
-  const action = undoStack.pop();
-  const c = curves[action.curveIdx];
-  if (action.type === 'add' && c) {
-    const idx = c.px.lastIndexOf(action.x);
-    if (idx >= 0) { c.px.splice(idx, 1); c.py.splice(idx, 1); }
-    showToast('Undid add');
-  } else if (action.type === 'erase' && c) {
-    c.px.splice(action.idx, 0, action.x);
-    c.py.splice(action.idx, 0, action.y);
-    showToast('Undid erase');
-  } else if (action.type === 'eraseBatch') {
-    for (const [ci, x, y] of action.pts) {
-      if (curves[ci]) { curves[ci].px.push(x); curves[ci].py.push(y); }
-    }
-    showToast(`Restored ${action.pts.length} points`);
-  } else if (action.type === 'autotrace' && c) {
-    c.px.splice(c.px.length - action.count, action.count);
-    c.py.splice(c.py.length - action.count, action.count);
-    waypoints.pop();
-    showToast(`Undid auto-trace (${action.count} points)`);
+  if (histAt <= 0) { showToast('Nothing earlier to go back to'); return; }
+  restoreState(histAt - 1);
+  showToast(`Back to: ${history[histAt].label}`);
+}
+
+function redoAction() {
+  if (histAt >= history.length - 1) { showToast('Nothing to redo'); return; }
+  restoreState(histAt + 1);
+  showToast(`Forward to: ${history[histAt].label}`);
+}
+
+function renderHistory() {
+  const box = document.getElementById('histList');
+  if (!box) return;
+  box.innerHTML = '';
+  for (let i = history.length - 1; i >= 0; i--) {   // newest first
+    const h = history[i];
+    const row = document.createElement('button');
+    row.className = 'hrow' + (i === histAt ? ' now' : '') + (i > histAt ? ' ahead' : '');
+    const total = h.curves.reduce((n, s) => n + s.px.length, 0);
+    row.innerHTML = `<span class="hlabel">${h.label}</span>` +
+                    `<span class="hmeta">${h.detail ? h.detail + ' · ' : ''}${total} dots</span>`;
+    row.title = (i === histAt ? 'Current state' : 'Restore this state') +
+                ` — ${new Date(h.t).toLocaleTimeString()}`;
+    row.onclick = () => { restoreState(i); showToast(`Restored: ${h.label}`); };
+    box.appendChild(row);
   }
-  updateInfo();
-  draw();
-  scheduleGenerate();
+  const pos = document.getElementById('histPos');
+  if (pos) pos.textContent = history.length ? `${histAt + 1} / ${history.length}` : '—';
 }
 
 // ── Info panel ──
@@ -974,7 +1039,7 @@ function enterBrowse() {
   document.body.classList.add('browsing');
   document.getElementById('dropzone').classList.add('hidden');
   document.getElementById('results').classList.remove('show');
-  curves = []; undoStack = [];
+  curves = [];
   showSlide(slideIdx);
   setMode('pan');
 }

@@ -19,9 +19,17 @@ let activeIdx = 0;
 let img = null, imgW = 0, imgH = 0, pageScale = 1;   // scan px -> original px
 let zoom = 1, panX = 0, panY = 0;
 let mode = 'pan';
-let undoStack = [];
 let ERASE_R = 26;
 let eraseScope = 'active';   // 'active' = only the selected colour | 'all'
+
+/* ── history ─────────────────────────────────────────────────────────────
+ * Snapshots rather than inverse-deltas: each entry holds the full dot state,
+ * so any point in the session can be restored directly instead of replaying
+ * a chain of undos.  ~24 KB per snapshot for a 1500-point curve, capped.
+ */
+const HIST_MAX = 80;
+let history = [];      // [{label, detail, curves:[{px,py}], activeIdx, t}]
+let histAt = -1;       // index of the state currently on screen
 let isErasing = false, eraseBatch = null, lastErase = null, lastMouse = null;
 let isPanning = false, panSX = 0, panSY = 0;
 
@@ -88,7 +96,6 @@ async function loadPage() {
     curves.push({ ...ROLE[k], px, py });
   }
   activeIdx = 0;
-  undoStack = [];
 
   img = new Image();
   img.onload = () => {
@@ -97,6 +104,8 @@ async function loadPage() {
     pageScale = frame.w / imgW;           // original px per displayed scan px
     document.getElementById('loading').style.display = 'none';
     resize(); fit(); setMode('add'); renderSwatches(); refresh();
+    history = []; histAt = -1;
+    snapshot('Published data', 'as digitized');
   };
   img.onerror = () => {
     document.getElementById('loading').textContent = 'Could not load the page scan.';
@@ -334,7 +343,7 @@ async function addWaypoint(ox, oy) {
   const seg = traceBetween(waypoints[waypoints.length - 2], waypoints[waypoints.length - 1]);
   if (!seg.length) { toast('Those two dots are too close together'); return; }
   for (const [x, y] of seg) { c.px.push(x); c.py.push(y); }
-  undoStack.push({ t: 'auto', ci: activeIdx, n: seg.length });
+  snapshot('Auto-trace', `${c.name} · +${seg.length}`);
   // short hops track the ink almost perfectly; long ones can drift across a
   // busy stretch, so say so rather than let it fail quietly
   const span = Math.abs(waypoints[waypoints.length - 1][0] - waypoints[waypoints.length - 2][0]);
@@ -473,23 +482,65 @@ function eraseStroke(ox, oy) {
   return n;
 }
 
+function snapshot(label, detail) {
+  // editing after stepping back discards the abandoned future, the same way
+  // every editor behaves — otherwise the list stops matching what you see
+  if (histAt < history.length - 1) history = history.slice(0, histAt + 1);
+  history.push({
+    label, detail: detail || '',
+    curves: curves.map(c => ({ px: c.px.slice(), py: c.py.slice() })),
+    activeIdx, t: Date.now(),
+  });
+  if (history.length > HIST_MAX) history.shift();
+  histAt = history.length - 1;
+  renderHistory();
+}
+
+function restore(i) {
+  const h = history[i];
+  if (!h) return;
+  h.curves.forEach((s, ci) => {
+    if (!curves[ci]) return;
+    curves[ci].px = s.px.slice();
+    curves[ci].py = s.py.slice();
+  });
+  histAt = i;
+  activeIdx = Math.min(h.activeIdx, curves.length - 1);
+  renderSwatches(); renderHistory(); refresh(); draw();
+}
+
 function undo() {
-  const a = undoStack.pop();
-  if (!a) return;
-  if (a.t === 'add') {
-    const c = curves[a.ci];
-    c.px.splice(a.i, 1); c.py.splice(a.i, 1);
-    toast('Undid add');
-  } else if (a.t === 'auto') {
-    const c = curves[a.ci];
-    c.px.splice(c.px.length - a.n, a.n);
-    c.py.splice(c.py.length - a.n, a.n);
-    toast(`Undid auto-trace (${a.n} points)`);
-  } else if (a.t === 'erase') {
-    for (const [ci, x, y] of a.pts) { curves[ci].px.push(x); curves[ci].py.push(y); }
-    toast(`Restored ${a.pts.length} dots`);
+  if (histAt <= 0) { toast('Nothing earlier to go back to'); return; }
+  restore(histAt - 1);
+  toast(`Back to: ${history[histAt].label}`);
+}
+
+function redo() {
+  if (histAt >= history.length - 1) { toast('Nothing to redo'); return; }
+  restore(histAt + 1);
+  toast(`Forward to: ${history[histAt].label}`);
+}
+
+function renderHistory() {
+  const box = document.getElementById('histList');
+  if (!box) return;
+  box.innerHTML = '';
+  // newest first — that is where the attention is
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i];
+    const row = document.createElement('button');
+    row.className = 'hrow' + (i === histAt ? ' now' : '') + (i > histAt ? ' ahead' : '');
+    const total = h.curves.reduce((n, s) => n + s.px.length, 0);
+    row.innerHTML =
+      `<span class="hlabel">${h.label}</span>` +
+      `<span class="hmeta">${h.detail ? h.detail + ' · ' : ''}${total} dots</span>`;
+    row.title = (i === histAt ? 'Current state' : 'Restore this state') +
+                ` — ${new Date(h.t).toLocaleTimeString()}`;
+    row.onclick = () => { restore(i); toast(`Restored: ${h.label}`); };
+    box.appendChild(row);
   }
-  refresh(); draw();
+  const pos = document.getElementById('histPos');
+  if (pos) pos.textContent = history.length ? `${histAt + 1} / ${history.length}` : '—';
 }
 
 /* ── side panel ──────────────────────────────────────────────────────── */
@@ -693,7 +744,7 @@ canvas.addEventListener('mousedown', e => {
     const c = curves[activeIdx];
     if (!c) return;
     c.px.push(ox); c.py.push(oy);
-    undoStack.push({ t: 'add', ci: activeIdx, i: c.px.length - 1 });
+    snapshot('Add dot', c.name);
     refresh(); draw();
   } else if (mode === 'auto') {
     addWaypoint(ox, oy);
@@ -723,7 +774,8 @@ window.addEventListener('mouseup', () => {
   if (isErasing) {
     isErasing = false; lastErase = null;
     if (eraseBatch && eraseBatch.pts.length) {
-      undoStack.push(eraseBatch);
+      const c = curves[activeIdx];
+      snapshot('Erase', `${eraseScope === 'all' ? 'all curves' : (c ? c.name : '')} · -${eraseBatch.pts.length}`);
       toast(`Erased ${eraseBatch.pts.length} dots`);
     }
     eraseBatch = null;
@@ -757,7 +809,9 @@ document.addEventListener('keydown', e => {
   else if (e.key === '0') fit();
   else if (e.key === '+' || e.key === '=') { zoom *= 1.2; draw(); }
   else if (e.key === '-') { zoom /= 1.2; draw(); }
+  else if (e.key === 'z' && (e.ctrlKey || e.metaKey) && e.shiftKey) { e.preventDefault(); redo(); }
   else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undo(); }
+  else if (e.key === 'y' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); redo(); }
 });
 
 function syncSizes() {
@@ -791,6 +845,8 @@ document.getElementById('tAuto').onclick = () => setMode('auto');
 document.getElementById('tErase').onclick = () => setMode('erase');
 document.getElementById('tPan').onclick = () => setMode('pan');
 document.getElementById('tUndo').onclick = undo;
+document.getElementById('hUndo').onclick = undo;
+document.getElementById('hRedo').onclick = redo;
 document.getElementById('tFit').onclick = fit;
 document.getElementById('tIn').onclick = () => { zoom *= 1.2; draw(); };
 document.getElementById('tOut').onclick = () => { zoom /= 1.2; draw(); };
