@@ -8,9 +8,16 @@
 'use strict';
 
 const ROLE = {
-  em: { key: 'em', name: 'emission', color: '#C0392B' },
-  ab: { key: 'ab', name: 'absorption', color: '#1E8F4E' },
+  em:  { key: 'em',  name: 'emission',     color: '#C0392B' },
+  ab:  { key: 'ab',  name: 'absorption',   color: '#1E8F4E' },
+  // 18 plates print a second emission trace (CURVE I / CURVE II).  It has
+  // always been in the dataset; the editor simply never loaded it, so those
+  // pages looked half-digitized.
+  em2: { key: 'em2', name: 'emission II',  color: '#E67E22' },
 };
+// palette offered for a brand-new curve
+const NEW_COLORS = ['#3B82F6', '#9B59B6', '#E91E63', '#00BCD4', '#8BC34A', '#FF7043'];
+let newCurveSeq = 0;
 
 let SPECTRA = null, ORDER = null, FRAMES = null;
 let gid = null, meta = null, frame = null, xcal = null;
@@ -85,15 +92,10 @@ async function loadPage() {
   }
 
   curves = [];
-  for (const k of ['em', 'ab']) {
+  newCurveSeq = 0;
+  for (const k of ['em', 'ab', 'em2']) {
     if (!meta[k]) continue;
-    const wl = meta[k].wl, v = meta[k].inten;
-    const px = [], py = [];
-    for (let i = 0; i < wl.length; i++) {
-      px.push((1e7 / wl[i] - xcal.b) / xcal.a);
-      py.push(frame.y_bottom - v[i] * (frame.y_bottom - frame.y_top));
-    }
-    curves.push({ ...ROLE[k], px, py });
+    curves.push({ ...ROLE[k], ...toPixels(meta[k]) });
   }
   activeIdx = 0;
 
@@ -112,6 +114,16 @@ async function loadPage() {
     document.getElementById('loading').textContent = 'Could not load the page scan.';
   };
   img.src = 'scans/' + gid + '.webp';
+}
+
+/** A published/edited curve (nm, intensity) as page pixels. */
+function toPixels(src) {
+  const px = [], py = [];
+  for (let i = 0; i < src.wl.length; i++) {
+    px.push((1e7 / src.wl[i] - xcal.b) / xcal.a);
+    py.push(frame.y_bottom - src.inten[i] * (frame.y_bottom - frame.y_top));
+  }
+  return { px, py };
 }
 
 /* ── coordinate helpers (canvas <-> scan <-> original page px) ────────── */
@@ -594,18 +606,98 @@ function miniChart(id, wl, inten, color) {
 }
 
 let derived = {};
+
+/** Rebuild the side panel: one titled chart card per curve, plus the control
+ *  for starting a new one in a colour of your choosing. */
+function renderPanel() {
+  const host = document.getElementById('curvePanel');
+  if (!host) return;
+  host.innerHTML = '';
+  curves.forEach((c, i) => {
+    const head = document.createElement('div');
+    head.className = 'curve-head';
+    const dot = document.createElement('span');
+    dot.className = 'dot'; dot.style.background = c.color;
+    head.appendChild(dot);
+    head.appendChild(document.createTextNode(c.name));
+    if (c.custom) {
+      const rm = document.createElement('button');
+      rm.className = 'rm'; rm.textContent = '×';
+      rm.title = 'Remove this curve';
+      rm.onclick = () => {
+        if (!confirm(`Remove "${c.name}" and its ${c.px.length} dots?`)) return;
+        curves.splice(i, 1);
+        activeIdx = Math.max(0, Math.min(activeIdx, curves.length - 1));
+        snapshot('Remove curve', c.name);
+        refresh(); draw();
+      };
+      head.appendChild(rm);
+    }
+    host.appendChild(head);
+
+    const card = document.createElement('div');
+    card.className = 'chart-card';
+    const cv = document.createElement('canvas');
+    cv.id = 'chart_' + c.key;
+    card.appendChild(cv);
+    host.appendChild(card);
+
+    const p = derived[c.key] || { wl: [], inten: [] };
+    const peak = p.wl.length ? p.wl[p.inten.indexOf(Math.max(...p.inten))] : null;
+    for (const [label, value] of [
+      ['Peak', peak ? peak.toFixed(1) + ' nm' : '—'],
+      ['Points', p.wl.length ? `${p.wl.length} @ 0.1 nm` : '—'],
+    ]) {
+      const row = document.createElement('div');
+      row.className = 'stat';
+      row.innerHTML = `<span>${label}</span><b>${value}</b>`;
+      host.appendChild(row);
+    }
+  });
+
+  const nc = document.createElement('div');
+  nc.className = 'newcurve';
+  const picker = document.createElement('input');
+  picker.type = 'color';
+  picker.id = 'newColor';
+  picker.value = NEW_COLORS[newCurveSeq % NEW_COLORS.length];
+  picker.title = 'Colour for the new curve';
+  const btn = document.createElement('button');
+  btn.className = 'btn';
+  btn.textContent = '＋ New spectrum';
+  btn.title = 'Start an extra curve in this colour — for a trace the digitizer missed entirely';
+  btn.onclick = () => addCurve(picker.value);
+  nc.appendChild(picker); nc.appendChild(btn);
+  host.appendChild(nc);
+
+  // charts need the canvases laid out before they can size themselves
+  for (const c of curves) {
+    const p = derived[c.key] || { wl: [], inten: [] };
+    miniChart('chart_' + c.key, p.wl, p.inten, c.color);
+  }
+}
+
+/** Start a new, empty curve in the chosen colour. */
+function addCurve(color) {
+  newCurveSeq++;
+  const key = 'x' + newCurveSeq;
+  const name = prompt('Name for the new spectrum:', 'curve ' + newCurveSeq);
+  if (name === null) { newCurveSeq--; return; }
+  curves.push({
+    key, name: (name || 'curve ' + newCurveSeq).slice(0, 40),
+    color, custom: true, px: [], py: [],
+  });
+  activeIdx = curves.length - 1;
+  setMode('add');
+  snapshot('New spectrum', name);
+  refresh(); draw();
+  toast(`"${name}" added — click along the ink to draw it`);
+}
+
 function refresh() {
   derived = {};
-  for (const c of curves) {
-    const p = physical(c);
-    derived[c.key] = p;
-    const peak = p.wl.length ? p.wl[p.inten.indexOf(Math.max(...p.inten))] : null;
-    const pk = document.getElementById(c.key + 'Peak');
-    const n = document.getElementById(c.key + 'N');
-    if (pk) pk.textContent = peak ? peak.toFixed(1) + ' nm' : '—';
-    if (n) n.textContent = p.wl.length ? `${p.wl.length} @ 0.1 nm` : '—';
-    miniChart(c.key + 'Chart', p.wl, p.inten, c.color);
-  }
+  for (const c of curves) derived[c.key] = physical(c);
+  renderPanel();
   renderSwatches();
 }
 
@@ -621,17 +713,31 @@ function save(blob, name) {
 
 const safe = s => (s || 'spectrum').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40);
 
+/** Column pairs for export: one per curve that has data. */
+function exportColumns() {
+  return curves
+    .map(c => ({ c, p: derived[c.key] }))
+    .filter(x => x.p && x.p.wl.length)
+    .map(x => ({
+      label: x.c.name.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase(),
+      name: x.c.name, wl: x.p.wl, inten: x.p.inten,
+    }));
+}
+
 function csvText() {
-  const em = derived.em || { wl: [], inten: [] }, ab = derived.ab || { wl: [], inten: [] };
-  const rows = [['emission_wavelength_nm', 'emission_intensity',
-                 'absorption_wavelength_nm', 'absorption_intensity']];
-  for (let i = 0; i < Math.max(em.wl.length, ab.wl.length); i++) {
-    rows.push([
-      em.wl[i] !== undefined ? em.wl[i].toFixed(1) : '',
-      em.inten[i] !== undefined ? em.inten[i].toFixed(6) : '',
-      ab.wl[i] !== undefined ? ab.wl[i].toFixed(1) : '',
-      ab.inten[i] !== undefined ? ab.inten[i].toFixed(6) : '',
-    ]);
+  const cols = exportColumns();
+  if (!cols.length) return '';
+  const head = [];
+  for (const c of cols) head.push(`${c.label}_wavelength_nm`, `${c.label}_intensity`);
+  const rows = [head];
+  const n = Math.max(...cols.map(c => c.wl.length));
+  for (let i = 0; i < n; i++) {
+    const r = [];
+    for (const c of cols) {
+      r.push(c.wl[i] !== undefined ? c.wl[i].toFixed(1) : '');
+      r.push(c.inten[i] !== undefined ? c.inten[i].toFixed(6) : '');
+    }
+    rows.push(r);
   }
   return rows.map(r => r.join(',')).join('\n');
 }
@@ -683,32 +789,30 @@ function zip(files) {
 const xesc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 function xlsxBlob() {
-  const em = derived.em || { wl: [], inten: [] }, ab = derived.ab || { wl: [], inten: [] };
+  const cols = exportColumns();
   const col = i => String.fromCharCode(65 + i);
   const rows = [];
-  const head = ['Emission λ (nm)', 'Emission Intensity', 'Absorption λ (nm)', 'Absorption Intensity'];
+  const head = [];
+  for (const c of cols) head.push(`${c.name} λ (nm)`, `${c.name} Intensity`);
   rows.push(`<row r="1">` + [`${meta.name} — SpectraWolf (edited)`].map((v, i) =>
     `<c r="${col(i)}1" t="inlineStr"><is><t>${xesc(v)}</t></is></c>`).join('') + `</row>`);
   rows.push(`<row r="2">` + [`Berlman ${gid} · Handbook of Fluorescence Spectra, 2nd Ed. (1971)`]
     .map((v, i) => `<c r="${col(i)}2" t="inlineStr"><is><t>${xesc(v)}</t></is></c>`).join('') + `</row>`);
   rows.push(`<row r="4">` + head.map((v, i) =>
     `<c r="${col(i)}4" t="inlineStr"><is><t>${xesc(v)}</t></is></c>`).join('') + `</row>`);
-  const n = Math.max(em.wl.length, ab.wl.length);
+  const n = cols.length ? Math.max(...cols.map(c => c.wl.length)) : 0;
   for (let i = 0; i < n; i++) {
     const r = i + 5, cells = [];
-    if (em.wl[i] !== undefined) {
-      cells.push(`<c r="A${r}"><v>${em.wl[i].toFixed(1)}</v></c>`);
-      cells.push(`<c r="B${r}"><v>${em.inten[i].toFixed(6)}</v></c>`);
-    }
-    if (ab.wl[i] !== undefined) {
-      cells.push(`<c r="C${r}"><v>${ab.wl[i].toFixed(1)}</v></c>`);
-      cells.push(`<c r="D${r}"><v>${ab.inten[i].toFixed(6)}</v></c>`);
-    }
+    cols.forEach((c, ci) => {
+      if (c.wl[i] === undefined) return;
+      cells.push(`<c r="${col(ci * 2)}${r}"><v>${c.wl[i].toFixed(1)}</v></c>`);
+      cells.push(`<c r="${col(ci * 2 + 1)}${r}"><v>${c.inten[i].toFixed(6)}</v></c>`);
+    });
     rows.push(`<row r="${r}">${cells.join('')}</row>`);
   }
   const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols>
-<col min="1" max="4" width="20" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData></worksheet>`;
+<col min="1" max="16" width="20" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData></worksheet>`;
   return zip([
     ['[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -878,8 +982,12 @@ async function saveToSite() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         gid,
-        em: derived.em && derived.em.wl.length ? derived.em : null,
-        ab: derived.ab && derived.ab.wl.length ? derived.ab : null,
+        em:  derived.em  && derived.em.wl.length  ? derived.em  : null,
+        ab:  derived.ab  && derived.ab.wl.length  ? derived.ab  : null,
+        em2: derived.em2 && derived.em2.wl.length ? derived.em2 : null,
+        extra: curves.filter(c => c.custom && derived[c.key] && derived[c.key].wl.length)
+                     .map(c => ({ name: c.name, color: c.color,
+                                  wl: derived[c.key].wl, inten: derived[c.key].inten })),
         author: document.getElementById('svAuthor').value,
         note: document.getElementById('svNote').value,
       }),
@@ -911,16 +1019,21 @@ async function loadCommunityEdit() {
     const doc = await r.json();
     if (!doc || (!doc.em && !doc.ab)) return;
     communityEdit = doc;
-    for (const c of curves) {
-      const src = doc[c.key];
+    for (const k of ['em', 'ab', 'em2']) {
+      const src = doc[k];
       if (!src) continue;
-      const px = [], py = [];
-      for (let i = 0; i < src.wl.length; i++) {
-        px.push((1e7 / src.wl[i] - xcal.b) / xcal.a);
-        py.push(frame.y_bottom - src.inten[i] * (frame.y_bottom - frame.y_top));
-      }
-      c.px = px; c.py = py;
+      let c = curves.find(x => x.key === k);
+      if (!c) { c = { ...ROLE[k], px: [], py: [] }; curves.push(c); }
+      Object.assign(c, toPixels(src));
     }
+    // curves a contributor drew themselves come back with their own colours
+    curves = curves.filter(c => !c.custom);
+    (doc.extra || []).forEach((src, i) => {
+      newCurveSeq = Math.max(newCurveSeq, i + 1);
+      curves.push({ key: 'x' + (i + 1), name: src.name || `curve ${i + 1}`,
+                    color: src.color || '#3B82F6', custom: true, ...toPixels(src) });
+    });
+    activeIdx = Math.min(activeIdx, curves.length - 1);
     renderSwatches(); refresh(); draw();
     snapshot('Community edit', `by ${doc.author || 'anonymous'}`);
     if (msg) {

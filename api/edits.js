@@ -15,7 +15,8 @@ module.exports = async (req, res) => {
       if (!row) return L.json(res, 404, { error: 'no community edit for this spectrum' });
       return L.json(res, 200, {
         gid: row.gid, version: row.version, author: row.author, note: row.note,
-        ts: Date.parse(row.created_at), em: row.em, ab: row.ab,
+        ts: Date.parse(row.created_at),
+        em: row.em, ab: row.ab, em2: row.em2, extra: row.extra,
       });
     }
     const edits = await L.index();

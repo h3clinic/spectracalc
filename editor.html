@@ -103,6 +103,23 @@
   }
   .side h3:first-child { margin-top: 0; }
   .chart-card { background: #fff; border-radius: 8px; padding: 6px; margin-bottom: 8px; }
+  .curve-head {
+    display: flex; align-items: center; gap: 7px; margin: 16px 0 8px;
+    font-size: 12px; font-weight: 600; color: var(--text2);
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .curve-head .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .curve-head .rm {
+    margin-left: auto; border: 0; background: none; color: var(--text2);
+    cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px;
+  }
+  .curve-head .rm:hover { color: var(--emission); }
+  .newcurve { display: flex; gap: 6px; align-items: center; margin-top: 10px; }
+  .newcurve input[type=color] {
+    width: 34px; height: 30px; padding: 0; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--surface2); cursor: pointer;
+  }
+  .newcurve .btn { flex: 1; justify-content: center; }
   .chart-card canvas { display: block; width: 100%; height: 132px; }
   .stat { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
   .stat b { font-variant-numeric: tabular-nums; }
@@ -214,15 +231,7 @@
   </div>
 
   <div class="side">
-    <h3>Emission</h3>
-    <div class="chart-card"><canvas id="emChart" height="150"></canvas></div>
-    <div class="stat"><span>Peak</span><b id="emPeak">—</b></div>
-    <div class="stat"><span>Points</span><b id="emN">—</b></div>
-
-    <h3>Absorption</h3>
-    <div class="chart-card"><canvas id="abChart" height="150"></canvas></div>
-    <div class="stat"><span>Peak</span><b id="abPeak">—</b></div>
-    <div class="stat"><span>Points</span><b id="abN">—</b></div>
+    <div id="curvePanel"></div>
 
     <h3>History <span id="histPos" style="float:right;font-weight:400;text-transform:none;letter-spacing:0">—</span></h3>
     <div class="hbar">

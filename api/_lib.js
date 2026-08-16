@@ -105,17 +105,41 @@ function validateCurve(c, label) {
   return { wl: owl, inten: oin };
 }
 
+const HEX = /^#[0-9a-fA-F]{6}$/;
+const MAX_EXTRA = 8;
+
+/** Validate contributor-drawn curves: [{name, color, wl, inten}, ...] */
+function validateExtra(list) {
+  if (list == null) return null;
+  if (!Array.isArray(list)) throw new Error('extra: must be a list of curves');
+  if (!list.length) return null;
+  if (list.length > MAX_EXTRA)
+    throw new Error(`extra: ${list.length} curves exceeds the ${MAX_EXTRA} cap`);
+  return list.map((c, i) => {
+    const curve = validateCurve(c, `extra[${i}]`);
+    if (!curve) throw new Error(`extra[${i}]: empty curve`);
+    const color = String(c.color || '');
+    if (!HEX.test(color)) throw new Error(`extra[${i}]: colour must be #rrggbb`);
+    return {
+      name: clean(c.name, 40) || `curve ${i + 1}`,
+      color: color.toLowerCase(),
+      wl: curve.wl, inten: curve.inten,
+    };
+  });
+}
+
 const clean = (s, max) =>
   String(s == null ? '' : s).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, max);
 
-const COLS = 'gid,version,author,note,em,ab,reverted,points,created_at';
+const COLS = 'gid,version,author,note,em,ab,em2,extra,reverted,points,created_at';
 
 /** The current version of one spectrum, or null when it has none / was reverted. */
 async function latest(gid) {
   const rows = await sb(
     `spectra_latest?gid=eq.${encodeURIComponent(gid)}&select=${COLS}&limit=1`);
   const row = rows && rows[0];
-  if (!row || row.reverted || (!row.em && !row.ab)) return null;
+  if (!row || row.reverted) return null;
+  if (!row.em && !row.ab && !row.em2 && !(row.extra && row.extra.length)) return null;
   return row;
 }
 
@@ -154,7 +178,26 @@ async function history(gid) {
             '&order=created_at.desc');
 }
 
+/** Export columns for a stored record: the standard curves plus any the
+ *  contributor drew themselves, in a stable order. */
+function curveColumns(doc) {
+  const out = [];
+  for (const [key, name] of [['em', 'Emission'], ['ab', 'Absorption'], ['em2', 'Emission II']]) {
+    const c = doc[key];
+    if (c && c.wl && c.wl.length)
+      out.push({ label: key === 'em2' ? 'emission_ii' : name.toLowerCase(), name, wl: c.wl, inten: c.inten });
+  }
+  for (const c of doc.extra || []) {
+    if (!c || !c.wl || !c.wl.length) continue;
+    out.push({
+      label: String(c.name || 'curve').replace(/[^A-Za-z0-9]+/g, '_').toLowerCase(),
+      name: c.name || 'curve', wl: c.wl, inten: c.inten,
+    });
+  }
+  return out;
+}
+
 module.exports = {
-  GID_RE, json, allowCors, readBody, validateCurve, clean,
-  configured, sb, latest, index, insertEdit, history,
+  GID_RE, json, allowCors, readBody, validateCurve, validateExtra, clean,
+  configured, sb, latest, index, insertEdit, history, curveColumns,
 };

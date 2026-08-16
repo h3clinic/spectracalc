@@ -15,20 +15,24 @@ module.exports = async (req, res) => {
   const gid = String(body.gid || '');
   if (!L.GID_RE.test(gid)) return L.json(res, 400, { error: 'bad gid' });
 
-  let em, ab;
+  let em, ab, em2, extra;
   try {
     em = L.validateCurve(body.em, 'emission');
     ab = L.validateCurve(body.ab, 'absorption');
+    em2 = L.validateCurve(body.em2, 'emission II');
+    extra = L.validateExtra(body.extra);
   } catch (e) { return L.json(res, 422, { error: e.message }); }
-  if (!em && !ab)
-    return L.json(res, 422, { error: 'nothing to save — send emission and/or absorption' });
+  if (!em && !ab && !em2 && !extra)
+    return L.json(res, 422, { error: 'nothing to save — send at least one curve' });
 
   const version = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const points = (em ? em.wl.length : 0) + (ab ? ab.wl.length : 0);
+  const points = (em ? em.wl.length : 0) + (ab ? ab.wl.length : 0) +
+                 (em2 ? em2.wl.length : 0) +
+                 (extra ? extra.reduce((n, c) => n + c.wl.length, 0) : 0);
 
   try {
     const row = await L.insertEdit({
-      gid, version, em, ab, points,
+      gid, version, em, ab, em2, extra, points,
       author: L.clean(body.author, 60) || 'anonymous',
       note: L.clean(body.note, 200),
     });

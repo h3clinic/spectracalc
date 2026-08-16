@@ -21,7 +21,8 @@ module.exports = async (req, res) => {
     if (!cur) return L.json(res, 404, { error: 'nothing to revert — this spectrum is unedited' });
     const version = `${Date.now()}-revert`;
     await L.insertEdit({
-      gid, version, em: null, ab: null, reverted: true, points: 0,
+      gid, version, em: null, ab: null, em2: null, extra: null,
+      reverted: true, points: 0,
       author: L.clean(body.author, 60) || 'anonymous',
       note: L.clean(body.note, 200) || 'reverted to the published digitization',
     });

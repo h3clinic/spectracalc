@@ -21,20 +21,21 @@ module.exports = async (req, res) => {
     return res.end();
   }
 
-  const em = doc.em || { wl: [], inten: [] };
-  const ab = doc.ab || { wl: [], inten: [] };
+  const cols = L.curveColumns(doc);
+  const head = [];
+  for (const c of cols) head.push(`${c.label}_wavelength_nm`, `${c.label}_intensity`);
   const rows = [
     `${gid} — community edit ${doc.version} by ${doc.author}${doc.note ? ' — ' + doc.note : ''}`,
-    'emission_wavelength_nm,emission_intensity,absorption_wavelength_nm,absorption_intensity',
+    head.join(','),
   ];
-  const n = Math.max(em.wl.length, ab.wl.length);
+  const n = cols.length ? Math.max(...cols.map(c => c.wl.length)) : 0;
   for (let i = 0; i < n; i++) {
-    rows.push([
-      em.wl[i] !== undefined ? em.wl[i].toFixed(1) : '',
-      em.inten[i] !== undefined ? em.inten[i].toFixed(6) : '',
-      ab.wl[i] !== undefined ? ab.wl[i].toFixed(1) : '',
-      ab.inten[i] !== undefined ? ab.inten[i].toFixed(6) : '',
-    ].join(','));
+    const r = [];
+    for (const c of cols) {
+      r.push(c.wl[i] !== undefined ? c.wl[i].toFixed(1) : '');
+      r.push(c.inten[i] !== undefined ? c.inten[i].toFixed(6) : '');
+    }
+    rows.push(r.join(','));
   }
   res.statusCode = 200;
   res.setHeader('content-type', 'text/csv; charset=utf-8');

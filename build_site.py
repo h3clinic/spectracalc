@@ -135,7 +135,10 @@ def build_data(spectra, order):
         json.dump(idx, f, separators=(",", ":"))
     for gid in order:
         s = spectra[gid]
-        payload = {k: s[k] for k in ("name", "f1", "xcal", "em", "ab") if k in s}
+        # em2 is the second emission trace on the CURVE I / II plates; it was
+        # in the dataset all along but never reached the site, so those 18
+        # pages looked half-digitized in the editor and the viewer
+        payload = {k: s[k] for k in ("name", "f1", "xcal", "em", "ab", "em2") if k in s}
         payload["graph"] = gid
         with open(os.path.join(d, "sp", gid + ".json"), "w") as f:
             json.dump(payload, f, separators=(",", ":"))

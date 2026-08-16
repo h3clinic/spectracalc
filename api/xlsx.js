@@ -60,12 +60,11 @@ const esc = (s) => String(s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 function workbook(gid, doc) {
-  const em = doc.em || { wl: [], inten: [] };
-  const ab = doc.ab || { wl: [], inten: [] };
+  const cols = L.curveColumns(doc);
   const col = (i) => String.fromCharCode(65 + i);
   const rows = [];
-  const head = ['Emission λ (nm)', 'Emission Intensity',
-                'Absorption λ (nm)', 'Absorption Intensity'];
+  const head = [];
+  for (const c of cols) head.push(`${c.name} λ (nm)`, `${c.name} Intensity`);
   const title = `${gid} — community edit by ${doc.author || 'anonymous'}`;
   rows.push(`<row r="1"><c r="A1" t="inlineStr"><is><t>${esc(title)}</t></is></c></row>`);
   rows.push(`<row r="2"><c r="A2" t="inlineStr"><is><t>${esc(
@@ -73,22 +72,19 @@ function workbook(gid, doc) {
     'Berlman, Handbook of Fluorescence Spectra, 2nd Ed. (1971)')}</t></is></c></row>`);
   rows.push(`<row r="4">` + head.map((h, i) =>
     `<c r="${col(i)}4" t="inlineStr"><is><t>${esc(h)}</t></is></c>`).join('') + `</row>`);
-  const n = Math.max(em.wl.length, ab.wl.length);
+  const n = cols.length ? Math.max(...cols.map(c => c.wl.length)) : 0;
   for (let i = 0; i < n; i++) {
     const r = i + 5, cells = [];
-    if (em.wl[i] !== undefined) {
-      cells.push(`<c r="A${r}"><v>${em.wl[i].toFixed(1)}</v></c>`);
-      cells.push(`<c r="B${r}"><v>${em.inten[i].toFixed(6)}</v></c>`);
-    }
-    if (ab.wl[i] !== undefined) {
-      cells.push(`<c r="C${r}"><v>${ab.wl[i].toFixed(1)}</v></c>`);
-      cells.push(`<c r="D${r}"><v>${ab.inten[i].toFixed(6)}</v></c>`);
-    }
+    cols.forEach((c, ci) => {
+      if (c.wl[i] === undefined) return;
+      cells.push(`<c r="${col(ci * 2)}${r}"><v>${c.wl[i].toFixed(1)}</v></c>`);
+      cells.push(`<c r="${col(ci * 2 + 1)}${r}"><v>${c.inten[i].toFixed(6)}</v></c>`);
+    });
     rows.push(`<row r="${r}">${cells.join('')}</row>`);
   }
   const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<cols><col min="1" max="4" width="21" customWidth="1"/></cols>
+<cols><col min="1" max="16" width="21" customWidth="1"/></cols>
 <sheetData>${rows.join('')}</sheetData></worksheet>`;
 
   return zip([

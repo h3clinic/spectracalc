@@ -13,11 +13,14 @@ create table if not exists public.spectra_edits (
   note        text        default ''                   check (char_length(note)   <= 200),
   em          jsonb,
   ab          jsonb,
+  em2         jsonb,   -- second emission trace (CURVE I / CURVE II plates)
+  extra       jsonb,   -- contributor-drawn curves: [{name, color, wl, inten}]
   reverted    boolean     not null default false,
   points      integer     not null default 0 check (points >= 0 and points <= 40000),
   created_at  timestamptz not null default now(),
   -- a row must carry a curve unless it is a revert marker
-  constraint has_payload check (reverted or em is not null or ab is not null)
+  constraint has_payload check (reverted or em is not null or ab is not null
+                                or em2 is not null or extra is not null)
 );
 
 create index if not exists spectra_edits_gid_created
@@ -25,7 +28,7 @@ create index if not exists spectra_edits_gid_created
 
 create or replace view public.spectra_latest as
 select distinct on (gid)
-       gid, version, author, note, em, ab, reverted, points, created_at
+       gid, version, author, note, em, ab, em2, extra, reverted, points, created_at
 from public.spectra_edits
 order by gid, created_at desc;
 
