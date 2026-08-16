@@ -111,7 +111,10 @@ async function loadPage() {
     // seat the reconstruction on the ink before anyone starts editing
     let snapped = 0;
     for (const c of curves) snapped += snapToInk(c).moved;
-    if (snapped) { refresh(); draw(); snapshot('Fitted to ink', `${snapped} dots`); }
+    if (snapped || refit) {
+      refresh(); draw();
+      snapshot('Fitted to ink', `${snapped} dots`);
+    }
     loadCommunityEdit();
   };
   img.onerror = () => {
@@ -233,7 +236,22 @@ function buildInk() {
     if (between > best) { best = between; thr = t; }
   }
   for (let p = 0; p < lum.length; p++) mask[p] = lum[p] <= thr ? 1 : 0;
-  INK = { w: imgW, h: imgH, mask, thr };
+
+  // Which rows are ruled lines?  The box border and the axis rules run the
+  // width of the plot; a spectrum does not.  Snapping has to know the
+  // difference: an apex dot sitting above its curve is usually nearer the top
+  // border than the curve, so without this it snaps to the border and stays
+  // above the peak — the "dots above the peak" report.
+  const rule = new Uint8Array(imgH);
+  const fx0 = Math.max(0, Math.round((frame.x_left + 30) / pageScale));
+  const fx1 = Math.min(imgW - 1, Math.round((frame.x_right - 30) / pageScale));
+  const span = Math.max(1, fx1 - fx0);
+  for (let y = 0; y < imgH; y++) {
+    let hit = 0;
+    for (let x = fx0; x <= fx1; x += 2) if (mask[y * imgW + x]) hit++;
+    if (hit / (span / 2) > 0.6) rule[y] = 1;
+  }
+  INK = { w: imgW, h: imgH, mask, thr, rule };
 }
 
 const isInk = (x, y) =>
@@ -357,30 +375,119 @@ function traceBetween(A, B) {
  * draw their apex a shade under the 1.00 rule (mesitylene stops 22 px short).
  * Reconstructing straight from the normalised value therefore floats the top
  * of the curve above the ink, and the page cannot be hand-corrected without
- * first dragging every apex dot back down.  Snap each dot to the nearest ink
- * run in its own column; dots over blank paper (print breaks) are left alone.
+ * first dragging every apex dot back down.
+ *
+ * Two passes.  The first is a plain nearest-ink search in each dot's own
+ * column, which settles the bulk of a curve.  The second propagates outwards
+ * from the dots the first pass was sure about: an unresolved dot is searched
+ * around its resolved *neighbour's* height rather than its own, so a stretch
+ * that starts far from the ink is walked back column by column instead of
+ * casting an ever-wider net around a position already known to be wrong.
+ * That is what recovers an apex — a dot published at 1.0 sits up on the 1.00
+ * rule, too far from the printed peak for pass one, but only a few pixels
+ * from the neighbour beside it.  Dots over blank paper (print breaks) and
+ * dots on a stroke too steep to follow are left alone.
  */
+// 20 scan px: swept over 205 curves on 103 pages.  12 leaves apexes on plates
+// whose printed peak stops ~25 px under the 1.00 rule; 28 and 40 recover no
+// further apexes and start dragging dots across neighbouring strokes.
+const NEIGHBOUR_RADIUS = 20;             // scan px — pass-two search band
+const SWEEPS = 4;
+const BRIDGE_MAX_COLS = 24;              // widest gap pass three will span
+
+const STROKE_MAX = 8;                    // scan px — a run taller than this is
+                                         // a steep flank, not a stroke crossed
+                                         // square-on
+
+/**
+ * Nearest ink run to `y` in column `x`, ignoring the frame and axis rules.
+ *
+ * Returns the point *within* the run to move to, not the run's centre.  Where
+ * a curve climbs steeply its column run is tall — 77 px on graph-124 — and the
+ * centre of that run is nowhere near the stroke the dot should land on.  Aim
+ * at the near edge instead, and leave a dot that already sits inside a run
+ * exactly where it is.
+ */
+function nearestRun(x, y, radius) {
+  let best = null, bestD = Infinity;
+  for (const [a, b] of columnRuns(x)) {
+    let ruled = true;
+    for (let yy = a; yy <= b; yy++) if (!INK.rule[yy]) { ruled = false; break; }
+    if (ruled) continue;                 // a border or a 0.5/1.0 grid rule
+    const inside = y >= a && y <= b;
+    let target;
+    if (inside) target = y;                                 // already on ink
+    else if (b - a <= STROKE_MAX) target = (a + b) / 2;     // an ordinary stroke
+    else target = y < a ? a + STROKE_MAX / 2 : b - STROKE_MAX / 2;
+    // judge by how far the *ink* is, not by how far the landing point is: on a
+    // tall run the landing point is half a stroke inside it, and charging that
+    // inset against the tolerance rejected apexes only 9 px off the stroke
+    const d = inside ? 0 : Math.min(Math.abs(y - a), Math.abs(y - b));
+    if (d < bestD) { bestD = d; best = target; }
+  }
+  return bestD <= radius ? best : null;
+}
+
 function snapToInk(curve, tol) {
   if (!INK) buildInk();
   tol = tol || 26;                       // original page px
   const tolScan = tol / pageScale;
-  let moved = 0, total = 0;
-  for (let i = 0; i < curve.px.length; i++) {
+  const n = curve.px.length;
+  const xs = new Int32Array(n), ys = new Float64Array(n);
+  const live = new Uint8Array(n), fixed = new Uint8Array(n);
+
+  for (let i = 0; i < n; i++) {                       // pass one
     const x = Math.round(curve.px[i] / pageScale);
-    const y = curve.py[i] / pageScale;
+    xs[i] = x;
+    ys[i] = curve.py[i] / pageScale;
     if (x < 0 || x >= INK.w) continue;
+    live[i] = 1;
+    const hit = nearestRun(x, ys[i], tolScan);
+    if (hit !== null) { ys[i] = hit; fixed[i] = 1; }
+  }
+
+  for (let s = 0; s < SWEEPS; s++) {                  // pass two
+    let changed = 0;
+    for (let pass = 0; pass < 2; pass++) {            // rightwards, then back
+      for (let k = 0; k < n; k++) {
+        const i = pass ? n - 1 - k : k;
+        if (!live[i] || fixed[i]) continue;
+        const ref = (i > 0 && fixed[i - 1]) ? ys[i - 1]
+                  : (i + 1 < n && fixed[i + 1]) ? ys[i + 1] : null;
+        if (ref === null) continue;
+        const hit = nearestRun(xs[i], ref, NEIGHBOUR_RADIUS);
+        if (hit === null) continue;
+        ys[i] = hit; fixed[i] = 1; changed++;
+      }
+    }
+    if (!changed) break;
+  }
+
+  // Pass three: a dot can be stranded in a column that holds no usable ink at
+  // all — where a peak reaches 1.0 the stroke merges into the top border, and
+  // excluding the border leaves nothing to snap to.  When both sides of such a
+  // dot are settled and close by, put it on the chord between them.  The
+  // displacement gate keeps ordinary print breaks untouched: only a dot that
+  // has drifted further than the search band is bridged.
+  for (let i = 0; i < n; i++) {
+    if (!live[i] || fixed[i]) continue;
+    let l = i - 1; while (l >= 0 && !fixed[l]) l--;
+    let r = i + 1; while (r < n && !fixed[r]) r++;
+    if (l < 0 || r >= n) continue;
+    if (Math.abs(xs[r] - xs[l]) > BRIDGE_MAX_COLS) continue;
+    const chord = ys[l] + (ys[r] - ys[l]) * ((i - l) / (r - l));
+    if (Math.abs(ys[i] - chord) <= NEIGHBOUR_RADIUS) continue;
+    ys[i] = chord; fixed[i] = 1;
+  }
+
+  let moved = 0, total = 0;
+  for (let i = 0; i < n; i++) {
+    if (!live[i]) continue;
     total++;
-    let best = null, bestD = Infinity;
-    for (const [a, b] of columnRuns(x)) {
-      // ignore the frame rules: they span the plot and sit at its edges
-      const mid = (a + b) / 2;
-      const d = Math.abs(mid - y);
-      if (d < bestD) { bestD = d; best = mid; }
-    }
-    if (best !== null && bestD <= tolScan && bestD > 0.5) {
-      curve.py[i] = best * pageScale;
-      moved++;
-    }
+    if (!fixed[i]) continue;
+    if (Math.abs(ys[i] - curve.py[i] / pageScale) <= 0.5) continue;
+    curve.py[i] = ys[i] * pageScale;
+    moved++;
   }
   return { moved, total };
 }
