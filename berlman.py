@@ -1819,20 +1819,16 @@ def _physical(curves, fr, xcal, rycal):
         if xcal:
             c["wavenumber"] = xcal["a"] * c["px"] + xcal["b"]
         inten = px_to_intensity(c["py"], fr)
-        # Berlman normalizes every standard curve to unit peak.  A raw max
-        # just under 1.0 is border-blanking clip at the APEX only — so the
-        # restoration must be local: stretch just the top 2% band up to 1.0
-        # and leave the rest of the curve exactly on the ink (a global
-        # rescale floats every point ~1.5% above the printed line).
+        # No peak restoration.  Berlman normalizes to unit peak, so a raw max
+        # just under 1.0 was read as border-blanking clip and the top 2% band
+        # was stretched back up to 1.0.  But plenty of plates simply *print*
+        # the apex below the rule — mesitylene peaks at 0.990 — and stretching
+        # those lifts the top of the curve off the printed stroke, which is
+        # exactly the "dots above the black line" the editor then has to fight.
+        # Whatever the plate prints is the measurement.  Record the peak so a
+        # consumer can normalize on purpose; do not do it for them.
         raw_max = float(inten.max()) if len(inten) else 0.0
         c["raw_max_intensity"] = raw_max
-        if (c.get("role") in ("emission", "absorption")
-                and 0.96 <= raw_max < 1.0):
-            band_lo = raw_max - 0.02
-            sel = inten > band_lo
-            inten = np.array(inten, float)
-            inten[sel] = band_lo + (inten[sel] - band_lo) * (
-                (1.0 - band_lo) / (raw_max - band_lo))
         c["intensity"] = inten
         if rycal and c["role"] == "absorption":
             c["extinction"] = rycal["a"] * c["py"] + rycal["b"]
