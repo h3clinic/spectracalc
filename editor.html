@@ -215,7 +215,7 @@
     <div class="tools named">
       <button class="tool" id="tAdd" title="Add dots to the selected curve (1)">
         <span>＋</span><em>Add</em></button>
-      <button class="tool" id="tAuto" title="Auto-trace: click a few dots along the missed ink and the curve is followed between them — deterministic pixel following, not AI (4). Esc restarts the chain.">
+      <button class="tool" id="tAuto" title="Click a few points along missed ink; the curve between them is followed (4). Esc restarts.">
         <span>⚡</span><em>Auto</em></button>
       <button class="tool" id="tErase" title="Eraser — swipe across dots (2)">
         <span>⌫</span><em>Erase</em></button>
@@ -227,7 +227,7 @@
       <button class="tool" id="tFit"   title="Fit to window (0)">⤢</button>
       <button class="tool" id="tOut"   title="Zoom out (−)">⊖</button>
       <button class="tool" id="tIn"    title="Zoom in (+)">⊕</button>
-      <button class="tool" id="tReset" title="Discard edits, reload published data">⟲</button>
+      <button class="tool" id="tReset" title="Reload the published data">⟲</button>
     </div>
     <div class="lbl">Size</div>
     <div class="sizes" id="sizes">
@@ -237,8 +237,8 @@
     </div>
     <div class="lbl">Erases</div>
     <div class="scope" id="scope">
-      <button class="sc on" data-scope="active" title="Eraser removes only the selected colour — safe where curves cross (S)">This&nbsp;color</button>
-      <button class="sc" data-scope="all" title="Eraser removes dots from every curve (S)">All</button>
+      <button class="sc on" data-scope="active" title="Erase only the selected colour (S)">This&nbsp;color</button>
+      <button class="sc" data-scope="all" title="Erase every curve (S)">All</button>
     </div>
     <div class="lbl">Colors</div>
     <div class="swatches" id="swatches"></div>
@@ -259,19 +259,14 @@
       <button class="btn" id="hRedo" title="Step forward (Ctrl+Shift+Z)">↪ Forward</button>
     </div>
     <div class="hist" id="histList"></div>
-    <p class="note" style="margin-top:6px">
-      Click any step to jump straight to that state. Editing from an earlier
-      step drops the steps after it.
-    </p>
+    <p class="note" style="margin-top:6px">Click a step to return to it.</p>
 
     <h3>Save to the site</h3>
     <div class="savebox">
       <input id="svAuthor" placeholder="Your name (optional)" maxlength="60">
-      <input id="svNote" placeholder="What did you change?" maxlength="200">
+      <input id="svNote" placeholder="What changed? (optional)" maxlength="200">
       <button class="btn btn-save" id="btnSave">💾 Save for everyone</button>
-      <div class="svmsg" id="svMsg">Saved edits replace the published curve on the
-        site for all visitors — charts, peaks and the CSV download. The published
-        digitization is kept and can be restored at any time.</div>
+      <div class="svmsg" id="svMsg">Publishes to the site. The original is kept.</div>
     </div>
 
     <h3>Download</h3>
@@ -283,18 +278,8 @@
       <a class="btn btn-alt" href="downloads/Berlman_Master_Index.xlsx" download>⬇ Master index — all 308</a>
     </div>
 
-    <h3>How this works</h3>
-    <p class="note">
-      Dots are rebuilt from the published 0.1 nm data pushed back through this
-      page's frozen calibration, so they land on the printed ink exactly as the
-      round-trip validation shows. Edit them and the charts and downloads update
-      live.
-    </p>
     <div class="warn" id="localNote">
-      <b>Saving publishes.</b> Anyone visiting the site will see your version of
-      this spectrum — its charts, its peak wavelengths and its CSV download —
-      until someone edits it again or reverts it. Every version is kept, and the
-      original digitization can always be restored from the viewer.
+      Anyone can edit; every version is kept and the original can be restored.
     </div>
   </div>
 </div>
@@ -308,9 +293,8 @@
 </div>
 
 <div class="pccpanel" id="pccPanel">
-  <h2>PhotochemCAD-style figures</h2>
-  <p class="pcchint">One figure per curve, drawn from the current dots — including
-     any spectrum you add. These update as you edit.</p>
+  <h2>Figures</h2>
+  <p class="pcchint">One per curve, updating as you edit.</p>
   <div class="pccgrid" id="pccGrid"></div>
 </div>
 

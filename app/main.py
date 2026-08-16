@@ -760,16 +760,12 @@ def _curve_physical(c, xcal, frame_orig, scale):
         return None, None
     wl = 1e7 / wn[ok]
     inten = inten[ok]
-    # Berlman normalization on the RAW points first — apex-LOCAL: stretch
-    # only the top 2% band to 1.0 so the rest of the curve stays exactly on
-    # the printed line (a global rescale floats every point above the ink)
-    mx = float(inten.max()) if len(inten) else 0.0
-    if 0.96 <= mx < 1.0:
-        band_lo = mx - 0.02
-        sel = inten > band_lo
-        inten = np.array(inten, float)
-        inten[sel] = band_lo + (inten[sel] - band_lo) * (
-            (1.0 - band_lo) / (mx - band_lo))
+    # No automatic peak normalization on an edited curve.  The batch digitizer
+    # stretches a near-unity apex to 1.0 because Berlman prints normalized
+    # spectra, but several plates draw the apex just under the 1.00 rule
+    # (MESITYLENE peaks at 0.990, ~22 px low at 600 DPI).  Re-applying that
+    # stretch to dots a person placed by hand lifts their apex off the ink and
+    # silently undoes the correction.  What the editor shows is what it saves.
     # 0.1 nm dedup-averaging: traced dots are per pixel COLUMN, so a
     # near-vertical needle flank piles many intensities onto one wavelength
     # — exported curves must be single-valued (same rule as the batch

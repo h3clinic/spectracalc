@@ -107,7 +107,7 @@ async function loadPage() {
     document.getElementById('loading').style.display = 'none';
     resize(); fit(); setMode('add'); renderSwatches(); refresh();
     history = []; histAt = -1;
-    snapshot('Published data', 'as digitized');
+    snapshot('Published', '');
     loadCommunityEdit();
   };
   img.onerror = () => {
@@ -150,14 +150,13 @@ function physical(c) {
   }
   if (pairs.length < 2) return { wl: [], inten: [] };
 
-  // apex-local restoration: stretch only the top 2% band so the rest of the
-  // curve stays exactly on the printed line
-  let mx = -Infinity;
-  for (const p of pairs) mx = Math.max(mx, p[1]);
-  if (mx >= 0.96 && mx < 1.0) {
-    const lo = mx - 0.02, f = (1 - lo) / (mx - lo);
-    for (const p of pairs) if (p[1] > lo) p[1] = lo + (p[1] - lo) * f;
-  }
+  // No automatic peak normalisation here.  The batch digitizer stretches a
+  // near-unity apex up to 1.0 because Berlman prints normalised spectra, but
+  // some plates draw the apex a shade below the 1.00 rule — MESITYLENE peaks
+  // at 0.990, about 22 px low at 600 DPI.  Re-applying that stretch to dots a
+  // person has just placed lifts their apex off the ink and silently undoes
+  // the correction they made.  Placement wins; use "Peak → 1.00" to normalise
+  // deliberately.
 
   // 0.1 nm dedup-average, apex bin keeps the peak value
   pairs.sort((a, b) => a[0] - b[0]);
@@ -350,18 +349,17 @@ function traceBetween(A, B) {
 async function addWaypoint(ox, oy) {
   waypoints.push([ox, oy]);
   draw();
-  if (waypoints.length < 2) { toast('Auto: click the next dot along the ink'); return; }
+  if (waypoints.length < 2) { toast('Click the next point'); return; }
   const c = curves[activeIdx];
   if (!c) { toast('Pick a colour first'); return; }
   const seg = traceBetween(waypoints[waypoints.length - 2], waypoints[waypoints.length - 1]);
-  if (!seg.length) { toast('Those two dots are too close together'); return; }
+  if (!seg.length) { toast('Points too close'); return; }
   for (const [x, y] of seg) { c.px.push(x); c.py.push(y); }
   snapshot('Auto-trace', `${c.name} · +${seg.length}`);
   // short hops track the ink almost perfectly; long ones can drift across a
   // busy stretch, so say so rather than let it fail quietly
   const span = Math.abs(waypoints[waypoints.length - 1][0] - waypoints[waypoints.length - 2][0]);
-  toast(`Auto-traced ${seg.length} points along the ink` +
-        (span > 250 ? ' — long hop, add closer dots if it drifts' : ''));
+  toast(`Traced ${seg.length} points` + (span > 250 ? ' — long hop, may drift' : ''));
   refresh(); draw();
 }
 
@@ -523,7 +521,7 @@ function restore(i) {
 }
 
 function undo() {
-  if (histAt <= 0) { toast('Nothing earlier to go back to'); return; }
+  if (histAt <= 0) { toast('Nothing earlier'); return; }
   restore(histAt - 1);
   toast(`Back to: ${history[histAt].label}`);
 }
@@ -547,8 +545,7 @@ function renderHistory() {
     row.innerHTML =
       `<span class="hlabel">${h.label}</span>` +
       `<span class="hmeta">${h.detail ? h.detail + ' · ' : ''}${total} dots</span>`;
-    row.title = (i === histAt ? 'Current state' : 'Restore this state') +
-                ` — ${new Date(h.t).toLocaleTimeString()}`;
+    row.title = new Date(h.t).toLocaleTimeString();
     row.onclick = () => { restore(i); toast(`Restored: ${h.label}`); };
     box.appendChild(row);
   }
@@ -620,8 +617,29 @@ function renderPanel() {
     dot.className = 'dot'; dot.style.background = c.color;
     head.appendChild(dot);
     head.appendChild(document.createTextNode(c.name));
+    const snap = document.createElement('button');
+    snap.className = 'rm'; snap.textContent = '⇧';
+    snap.title = 'Scale this curve so its peak sits at exactly 1.00';
+    snap.style.marginLeft = 'auto';
+    snap.onclick = () => {
+      const p = derived[c.key];
+      if (!p || !p.wl.length) return;
+      const mx = Math.max(...p.inten);
+      if (!(mx > 0) || Math.abs(mx - 1) < 1e-9) { toast('Already at 1.00'); return; }
+      // move the dots themselves, so the canvas and the export agree
+      const top = frame.y_top, bot = frame.y_bottom;
+      for (let i = 0; i < c.py.length; i++) {
+        const v = (bot - c.py[i]) / (bot - top);
+        c.py[i] = bot - (v / mx) * (bot - top);
+      }
+      snapshot('Peak → 1.00', c.name);
+      refresh(); draw();
+      toast(`${c.name}: peak ${mx.toFixed(4)} → 1.00`);
+    };
+    head.appendChild(snap);
     if (c.custom) {
       const rm = document.createElement('button');
+      rm.style.marginLeft = '0';
       rm.className = 'rm'; rm.textContent = '×';
       rm.title = 'Remove this curve';
       rm.onclick = () => {
@@ -681,7 +699,7 @@ function renderPanel() {
 function addCurve(color) {
   newCurveSeq++;
   const key = 'x' + newCurveSeq;
-  const name = prompt('Name for the new spectrum:', 'curve ' + newCurveSeq);
+  const name = prompt('Name:', 'curve ' + newCurveSeq);
   if (name === null) { newCurveSeq--; return; }
   curves.push({
     key, name: (name || 'curve ' + newCurveSeq).slice(0, 40),
@@ -691,7 +709,7 @@ function addCurve(color) {
   setMode('add');
   snapshot('New spectrum', name);
   refresh(); draw();
-  toast(`"${name}" added — click along the ink to draw it`);
+  toast(`"${name}" added`);
 }
 
 function refresh() {
@@ -777,7 +795,7 @@ function renderPcc() {
   grid.innerHTML = '';
   const live = curves.filter(c => derived[c.key] && derived[c.key].wl.length);
   if (!live.length) {
-    grid.innerHTML = '<p class="pcchint">No curves yet — add dots to see figures here.</p>';
+    grid.innerHTML = '<p class="pcchint">No curves yet.</p>';
     return;
   }
   for (const c of live) {
@@ -1106,8 +1124,8 @@ async function saveToSite() {
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     communityEdit = { version: d.version, ts: d.ts };
     msg.className = 'svmsg ok';
-    msg.textContent = `Saved · version ${d.version} · ${d.points} points are now live on the site.`;
-    toast('Saved — the site now shows your version');
+    msg.textContent = `Saved · ${d.points} points published.`;
+    toast('Published');
     snapshot('Saved to site', `v${String(d.version).slice(-6)}`);
   } catch (e) {
     msg.className = 'svmsg err';
@@ -1145,13 +1163,13 @@ async function loadCommunityEdit() {
     });
     activeIdx = Math.min(activeIdx, curves.length - 1);
     renderSwatches(); refresh(); draw();
-    snapshot('Community edit', `by ${doc.author || 'anonymous'}`);
+    snapshot('Loaded edit', doc.author || 'anonymous');
     if (msg) {
       msg.className = 'svmsg';
-      msg.textContent = `Loaded the current community edit by ${doc.author || 'anonymous'}` +
-                        (doc.note ? ` — ${doc.note}` : '') + '. Your save will replace it.';
+      msg.textContent = `Showing the current edit by ${doc.author || 'anonymous'}` +
+                        (doc.note ? ` — ${doc.note}` : '') + '.';
     }
-    toast(`Loaded the community edit by ${doc.author || 'anonymous'}`);
+    toast(`Loaded ${doc.author || 'anonymous'}'s edit`);
   } catch { /* API unreachable — carry on with the published curve */ }
 }
 

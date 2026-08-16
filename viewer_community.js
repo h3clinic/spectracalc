@@ -75,7 +75,7 @@
     var who = (meta && meta.author) || 'anonymous';
     var txt = el('span', {});
     txt.style.flex = '1 1 260px';
-    txt.appendChild(el('b', {}, 'Community edit by ' + who));
+    txt.appendChild(el('b', {}, 'Edited by ' + who));
     txt.appendChild(document.createTextNode(
       (when ? ' · ' + when : '') + (meta && meta.note ? ' — ' + meta.note : '')));
     var diff = describeDiff(gid);
@@ -86,7 +86,7 @@
     }
     b.appendChild(txt);
 
-    var seeOrig = el('button', { type: 'button' }, 'Show published');
+    var seeOrig = el('button', { type: 'button' }, 'Published');
     seeOrig.style.cssText = 'cursor:pointer;font-size:12.5px;padding:4px 10px;border-radius:5px;' +
       'border:1px solid var(--pcc-border,#ccc);background:transparent;color:inherit;';
     seeOrig.onclick = function () {
@@ -98,11 +98,10 @@
     };
     b.appendChild(seeOrig);
 
-    var revert = el('button', { type: 'button' }, 'Revert for everyone');
+    var revert = el('button', { type: 'button' }, 'Revert');
     revert.style.cssText = seeOrig.style.cssText;
     revert.onclick = function () {
-      if (!confirm('Restore the published digitization for ' + gid +
-                   ' for all visitors? The edit stays in the history.')) return;
+      if (!confirm('Restore the published version of ' + gid + '?')) return;
       revert.disabled = true;
       fetch('/api/revert', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -224,7 +223,7 @@
             cap.style.cssText = 'font-size:12px;opacity:.8;margin-top:6px;';
             cv.parentNode.insertBefore(cap, cv.nextSibling);
           }
-          cap.textContent = 'Grey dots are the published digitization; coloured dots are the community edit.';
+          cap.textContent = 'Grey: published. Colour: current edit.';
           cap.style.display = '';
         } else if (cap) { cap.style.display = 'none'; }
       };
