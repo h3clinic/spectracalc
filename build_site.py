@@ -224,13 +224,19 @@ def main():
                 raise SystemExit("index.html: Downloads button not found")
             html = html.replace(old_dl, new_dl)
             html = html.replace(new_edit, new_edit + "\n" + DL_WIRE)
+            if "viewer_community.js" not in html:
+                if "</body>" in html:
+                    html = html.replace(
+                        "</body>", '<script src="viewer_community.js"></script>\n</body>', 1)
+                else:
+                    html += '\n<script src="viewer_community.js"></script>\n'
 
         with open(os.path.join(SITE, page), "w", encoding="utf-8") as f:
             f.write(html)
         print(f"  {page}: {n} overlay refs -> .webp "
               f"({os.path.getsize(os.path.join(SITE, page)) / 1e6:.1f} MB)")
 
-    for extra in ("vercel.json", "editor.html", "editor.js"):
+    for extra in ("vercel.json", "editor.html", "editor.js", "viewer_community.js"):
         p = os.path.join(ROOT, extra)
         if os.path.exists(p):
             shutil.copy(p, os.path.join(SITE, extra))

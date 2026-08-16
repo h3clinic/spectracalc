@@ -106,6 +106,7 @@ async function loadPage() {
     resize(); fit(); setMode('add'); renderSwatches(); refresh();
     history = []; histAt = -1;
     snapshot('Published data', 'as digitized');
+    loadCommunityEdit();
   };
   img.onerror = () => {
     document.getElementById('loading').textContent = 'Could not load the page scan.';
@@ -847,6 +848,7 @@ document.getElementById('tPan').onclick = () => setMode('pan');
 document.getElementById('tUndo').onclick = undo;
 document.getElementById('hUndo').onclick = undo;
 document.getElementById('hRedo').onclick = redo;
+document.getElementById('btnSave').onclick = saveToSite;
 document.getElementById('tFit').onclick = fit;
 document.getElementById('tIn').onclick = () => { zoom *= 1.2; draw(); };
 document.getElementById('tOut').onclick = () => { zoom /= 1.2; draw(); };
@@ -858,6 +860,77 @@ document.getElementById('dlCsv').onclick = () =>
   save(new Blob([csvText()], { type: 'text/csv' }), `${safe(meta.name)}__${gid}_edited.csv`);
 document.getElementById('dlXlsx').onclick = () =>
   save(xlsxBlob(), `${safe(meta.name)}__${gid}_edited.xlsx`);
+
+/* ── save to the site ──────────────────────────────────────────────────
+ * Posts the derived 0.1 nm curves — the same numbers the CSV and Excel
+ * downloads carry — so the site's charts, peaks and CSV all follow. */
+let communityEdit = null;   // the edit already published for this page, if any
+
+async function saveToSite() {
+  const btn = document.getElementById('btnSave');
+  const msg = document.getElementById('svMsg');
+  if (!derived || (!derived.em && !derived.ab)) { toast('Nothing to save yet'); return; }
+  btn.disabled = true;
+  msg.className = 'svmsg';
+  msg.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        gid,
+        em: derived.em && derived.em.wl.length ? derived.em : null,
+        ab: derived.ab && derived.ab.wl.length ? derived.ab : null,
+        author: document.getElementById('svAuthor').value,
+        note: document.getElementById('svNote').value,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    communityEdit = { version: d.version, ts: d.ts };
+    msg.className = 'svmsg ok';
+    msg.textContent = `Saved · version ${d.version} · ${d.points} points are now live on the site.`;
+    toast('Saved — the site now shows your version');
+    snapshot('Saved to site', `v${String(d.version).slice(-6)}`);
+  } catch (e) {
+    msg.className = 'svmsg err';
+    msg.textContent = 'Could not save: ' + e.message;
+    toast('Save failed');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* If this spectrum already carries a community edit, start from it — otherwise
+ * a visitor would silently overwrite someone else's work with the published
+ * curve the moment they hit Save. */
+async function loadCommunityEdit() {
+  const msg = document.getElementById('svMsg');
+  try {
+    const r = await fetch('/api/edits?gid=' + encodeURIComponent(gid) + '&t=' + Date.now());
+    if (!r.ok) { communityEdit = null; return; }
+    const doc = await r.json();
+    if (!doc || (!doc.em && !doc.ab)) return;
+    communityEdit = doc;
+    for (const c of curves) {
+      const src = doc[c.key];
+      if (!src) continue;
+      const px = [], py = [];
+      for (let i = 0; i < src.wl.length; i++) {
+        px.push((1e7 / src.wl[i] - xcal.b) / xcal.a);
+        py.push(frame.y_bottom - src.inten[i] * (frame.y_bottom - frame.y_top));
+      }
+      c.px = px; c.py = py;
+    }
+    renderSwatches(); refresh(); draw();
+    snapshot('Community edit', `by ${doc.author || 'anonymous'}`);
+    if (msg) {
+      msg.className = 'svmsg';
+      msg.textContent = `Loaded the current community edit by ${doc.author || 'anonymous'}` +
+                        (doc.note ? ` — ${doc.note}` : '') + '. Your save will replace it.';
+    }
+    toast(`Loaded the community edit by ${doc.author || 'anonymous'}`);
+  } catch { /* API unreachable — carry on with the published curve */ }
+}
 
 function toast(m) {
   const t = document.getElementById('toast');

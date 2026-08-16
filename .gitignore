@@ -14,3 +14,7 @@ app/spectra_all.json
 # static site build artifacts (regenerate with: python3 build_site.py)
 site/
 .vercel/
+.env*
+
+# API function dependency cache (reinstalled by build_api.py)
+.apideps/
