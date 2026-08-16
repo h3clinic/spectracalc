@@ -1,12 +1,12 @@
 /* POST /api/save — store a community edit of one spectrum.
- * Never destroys the published curve: each save appends an immutable version
- * and repoints latest.json at it. */
+ * Appends a row; the published curve and every earlier version stay intact. */
 'use strict';
 const L = require('./_lib.js');
 
 module.exports = async (req, res) => {
   if (L.allowCors(req, res)) return;
   if (req.method !== 'POST') return L.json(res, 405, { error: 'POST only' });
+  if (!L.configured()) return L.json(res, 503, { error: 'edit storage is not configured' });
 
   let body;
   try { body = await L.readBody(req); }
@@ -20,27 +20,24 @@ module.exports = async (req, res) => {
     em = L.validateCurve(body.em, 'emission');
     ab = L.validateCurve(body.ab, 'absorption');
   } catch (e) { return L.json(res, 422, { error: e.message }); }
-  if (!em && !ab) return L.json(res, 422, { error: 'nothing to save — send emission and/or absorption' });
+  if (!em && !ab)
+    return L.json(res, 422, { error: 'nothing to save — send emission and/or absorption' });
 
-  const ts = Date.now();
-  const version = `${ts}-${Math.random().toString(36).slice(2, 8)}`;
-  const doc = {
-    gid, version, ts,
-    author: L.clean(body.author, 60) || 'anonymous',
-    note: L.clean(body.note, 200),
-    em, ab,
-  };
+  const version = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const points = (em ? em.wl.length : 0) + (ab ? ab.wl.length : 0);
 
   try {
-    await L.writeJson(`edits/${gid}/v/${version}.json`, doc);   // immutable
-    await L.writeJson(`edits/${gid}/latest.json`, doc);          // what the site serves
-    const idx = await L.rebuildIndex({ [gid]: doc });
+    const row = await L.insertEdit({
+      gid, version, em, ab, points,
+      author: L.clean(body.author, 60) || 'anonymous',
+      note: L.clean(body.note, 200),
+    });
     return L.json(res, 200, {
-      ok: true, gid, version, ts,
-      points: (em ? em.wl.length : 0) + (ab ? ab.wl.length : 0),
-      totalEdited: Object.keys(idx).length,
+      ok: true, gid, version, points,
+      ts: row ? Date.parse(row.created_at) : Date.now(),
     });
   } catch (e) {
-    return L.json(res, 500, { error: 'could not store the edit', detail: String(e.message || e) });
+    return L.json(res, e.status === 400 ? 422 : 500,
+      { error: 'could not store the edit', detail: String(e.message || e) });
   }
 };

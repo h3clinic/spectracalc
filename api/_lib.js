@@ -1,18 +1,23 @@
-/* Shared helpers for the community-edit API.
+/* Shared helpers for the community-edit API, backed by Supabase (Postgres).
  *
- * Storage layout in the Blob store (append-only by design — a published
- * spectrum is never destroyed, only layered over):
+ * One append-only table, public.spectra_edits, plus a view, public.spectra_latest,
+ * that picks the newest row per spectrum.  The view *derives* the index rather
+ * than storing one, so it cannot drift from the data — the earlier object-storage
+ * version maintained an index file by hand and silently dropped a page whenever a
+ * read missed its own write.
  *
- *   edits/<gid>/latest.json      the version the site currently serves
- *   edits/<gid>/v/<stamp>.json   every version ever saved, immutable
- *   index/edited.json            gid -> {ts, author, note, points}
+ * Row-level security makes the table append-only for the public key: select and
+ * insert are allowed, update and delete affect nothing.  A revert is therefore a
+ * new row flagged `reverted`, never a deletion, and no visitor can rewrite
+ * someone else's history.
  *
- * The index is rebuilt from a listing on every save, so a lost or raced
- * write repairs itself on the next save rather than drifting permanently.
+ * The key used here is Supabase's *publishable* key, which is designed to ship in
+ * client code.  Nothing secret is required or present.
  */
 'use strict';
 
-const { put, list, get } = require('@vercel/blob');
+const SB_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+const SB_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || '';
 
 const GID_RE = /^graph-\d{1,4}$/;
 const MAX_POINTS = 20000;
@@ -33,6 +38,30 @@ function allowCors(req, res) {
   return false;
 }
 
+function configured() { return !!(SB_URL && SB_KEY); }
+
+async function sb(path, opts) {
+  opts = opts || {};
+  const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
+    method: opts.method || 'GET',
+    headers: Object.assign({
+      apikey: SB_KEY,
+      authorization: `Bearer ${SB_KEY}`,
+      'content-type': 'application/json',
+    }, opts.headers || {}),
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const text = await r.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  if (!r.ok) {
+    const e = new Error((data && (data.message || data.error)) || `HTTP ${r.status}`);
+    e.status = r.status;
+    throw e;
+  }
+  return data;
+}
+
 async function readBody(req) {
   if (req.body && typeof req.body === 'object') return req.body;
   const chunks = [];
@@ -46,7 +75,7 @@ async function readBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-/** Reject anything that isn't a plausible spectrum before it reaches storage. */
+/** Reject anything that isn't a plausible spectrum before it reaches the table. */
 function validateCurve(c, label) {
   if (c == null) return null;
   if (typeof c !== 'object') throw new Error(`${label}: not an object`);
@@ -79,64 +108,53 @@ function validateCurve(c, label) {
 const clean = (s, max) =>
   String(s == null ? '' : s).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, max);
 
-async function readJson(pathname) {
-  try {
-    // the store is private, so blob URLs 403 without auth — read through the
-    // SDK, which signs the request with the project's token
-    const g = await get(pathname, { access: 'private' });
-    if (!g) return null;               // absent blob is a normal outcome
-    const text = await new Response(g.stream).text();   // g.blob is metadata, not content
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
+const COLS = 'gid,version,author,note,em,ab,reverted,points,created_at';
+
+/** The current version of one spectrum, or null when it has none / was reverted. */
+async function latest(gid) {
+  const rows = await sb(
+    `spectra_latest?gid=eq.${encodeURIComponent(gid)}&select=${COLS}&limit=1`);
+  const row = rows && rows[0];
+  if (!row || row.reverted || (!row.em && !row.ab)) return null;
+  return row;
 }
 
-async function writeJson(pathname, obj) {
-  return put(pathname, JSON.stringify(obj), {
-    access: 'private',                 // matches the store's access mode
-    contentType: 'application/json',
-    addRandomSuffix: false,
-    allowOverwrite: true,
-  });
-}
-
-/** Rebuild index/edited.json from the actual latest.json blobs. */
-async function rebuildIndex(known) {
-  const seen = {};
-  let cursor;
-  do {
-    const page = await list({ prefix: 'edits/', cursor, limit: 1000 });
-    for (const b of page.blobs) {
-      const m = b.pathname.match(/^edits\/(graph-\d+)\/latest\.json$/);
-      if (m) seen[m[1]] = b;
-    }
-    cursor = page.hasMore ? page.cursor : null;
-  } while (cursor);
-
-  // the listing can lag a fresh write as well — seed it with what we know
-  if (known) for (const g of Object.keys(known)) if (!seen[g]) seen[g] = { pathname: `edits/${g}/latest.json` };
-  const idx = {};
-  await Promise.all(Object.entries(seen).map(async ([gid, b]) => {
-    // prefer a doc the caller just wrote: object storage can miss its own
-    // write for a moment, which would drop that page from the index
-    const doc = (known && known[gid]) || await readJson(b.pathname);
-    if (!doc) return;
-    if (doc.reverted || (!doc.em && !doc.ab)) return;   // back to published
-    idx[gid] = {
-      ts: doc.ts,
-      author: doc.author || '',
-      note: doc.note || '',
-      version: doc.version,
-      points: (doc.em ? doc.em.wl.length : 0) + (doc.ab ? doc.ab.wl.length : 0),
-      reverted: !!doc.reverted,
+/** Every spectrum that currently carries an edit, as gid -> metadata. */
+async function index() {
+  const rows = await sb(
+    'spectra_latest?select=gid,version,author,note,reverted,points,created_at' +
+    '&reverted=is.false&order=gid.asc');
+  const out = {};
+  for (const r of rows || []) {
+    out[r.gid] = {
+      ts: Date.parse(r.created_at),
+      author: r.author || '',
+      note: r.note || '',
+      version: r.version,
+      points: r.points,
+      reverted: false,
     };
-  }));
-  await writeJson('index/edited.json', { updated: Date.now(), edits: idx });
-  return idx;
+  }
+  return out;
+}
+
+async function insertEdit(doc) {
+  const rows = await sb('spectra_edits', {
+    method: 'POST',
+    headers: { prefer: 'return=representation' },
+    body: doc,
+  });
+  return rows && rows[0];
+}
+
+/** Every version ever saved for a spectrum, newest first. */
+async function history(gid) {
+  return sb(`spectra_edits?gid=eq.${encodeURIComponent(gid)}` +
+            '&select=version,author,note,reverted,points,created_at' +
+            '&order=created_at.desc');
 }
 
 module.exports = {
   GID_RE, json, allowCors, readBody, validateCurve, clean,
-  readJson, writeJson, rebuildIndex,
+  configured, sb, latest, index, insertEdit, history,
 };

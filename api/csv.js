@@ -10,9 +10,11 @@ module.exports = async (req, res) => {
   const gid = url.searchParams.get('gid');
   if (!L.GID_RE.test(gid || '')) return L.json(res, 400, { error: 'bad gid' });
 
-  const doc = await L.readJson(`edits/${gid}/latest.json`);
+  if (!L.configured()) { res.statusCode = 302;
+    res.setHeader('location', `/downloads/csv/${gid}.csv`); return res.end(); }
+  const doc = await L.latest(gid);
   // a reverted page is back to the published digitization, so serve that file
-  if (!doc || doc.reverted || (!doc.em && !doc.ab)) {
+  if (!doc) {
     // no community edit — hand back the published file
     res.statusCode = 302;
     res.setHeader('location', `/downloads/csv/${gid}.csv`);

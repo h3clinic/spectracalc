@@ -117,8 +117,10 @@ module.exports = async (req, res) => {
   const gid = new URL(req.url, 'http://x').searchParams.get('gid');
   if (!L.GID_RE.test(gid || '')) return L.json(res, 400, { error: 'bad gid' });
 
-  const doc = await L.readJson(`edits/${gid}/latest.json`);
-  if (!doc || doc.reverted || (!doc.em && !doc.ab)) {
+  if (!L.configured()) { res.statusCode = 302;
+    res.setHeader('location', `/downloads/xlsx/${gid}.xlsx`); return res.end(); }
+  const doc = await L.latest(gid);
+  if (!doc) {
     res.statusCode = 302;                       // unedited — the published file
     res.setHeader('location', `/downloads/xlsx/${gid}.xlsx`);
     return res.end();
