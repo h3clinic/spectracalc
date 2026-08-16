@@ -181,31 +181,25 @@ async function history(gid) {
 /** Export columns for a stored record: the standard curves plus any the
  *  contributor drew themselves, in a stable order. */
 /**
- * Lift a curve whose printed apex falls just short of the 1.00 rule — and only
- * that case.  A CURVE I / CURVE II plate draws its second trace lower on
- * purpose (toluene's second emission peaks at 0.456 of the first); rescaling it
- * to unity would destroy the ratio the plate exists to show.
+ * Export what was stored, unscaled.
+ *
+ * This used to divide each curve by its own apex so the peak read exactly
+ * 1.00.  That is a global scaling: it displaces every point in proportion to
+ * its intensity, most at the maximum and not at all at the baseline.  A
+ * contributor who drags the apex down onto the printed stroke and saves would
+ * get it lifted straight back off the ink by the very next download — the
+ * correction survived in the database and was undone on the way out.  The
+ * stored curve is the measurement; ship it.
  */
-const APEX_LIFT_FLOOR = 0.9;
-
-function normaliseCurve(c) {
-  if (!c || !c.inten || !c.inten.length) return c;
-  const mx = Math.max(...c.inten);
-  // scale in either direction: a curve seated on the ink can sit a hair over
-  // the rule as easily as under it
-  if (!(mx > 0) || mx < APEX_LIFT_FLOOR || Math.abs(mx - 1) < 1e-9) return c;
-  return { wl: c.wl, inten: c.inten.map(v => Math.round((v / mx) * 1e6) / 1e6) };
-}
-
 function curveColumns(doc) {
   const out = [];
   for (const [key, name] of [['em', 'Emission'], ['ab', 'Absorption'], ['em2', 'Emission II']]) {
-    const c = normaliseCurve(doc[key]);
+    const c = doc[key];
     if (c && c.wl && c.wl.length)
       out.push({ label: key === 'em2' ? 'emission_ii' : name.toLowerCase(), name, wl: c.wl, inten: c.inten });
   }
   for (const raw of doc.extra || []) {
-    const c = normaliseCurve(raw);
+    const c = raw;
     if (!c || !c.wl || !c.wl.length) continue;
     out.push({
       label: String(raw.name || 'curve').replace(/[^A-Za-z0-9]+/g, '_').toLowerCase(),
@@ -217,5 +211,5 @@ function curveColumns(doc) {
 
 module.exports = {
   GID_RE, json, allowCors, readBody, validateCurve, validateExtra, clean,
-  configured, sb, latest, index, insertEdit, history, curveColumns, normaliseCurve,
+  configured, sb, latest, index, insertEdit, history, curveColumns,
 };

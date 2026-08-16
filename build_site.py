@@ -203,6 +203,31 @@ def main():
         html = html.replace(".png", ".webp")
 
         if page == "index.html":
+            # Re-inline the dataset from data/spectra_all.json.  index.html
+            # carries the whole thing as one `const SPECTRA = {...}` line, and
+            # the build used to copy that line through untouched — so a dataset
+            # regeneration reached the CSVs and the workbooks but the viewer's
+            # own charts, peak readouts and PhotochemCAD figures went on
+            # showing whatever was inlined the last time someone saved from the
+            # local app.  Regenerate it here so the built page cannot drift.
+            sp_line = ("const SPECTRA = "
+                       + json.dumps(spectra, separators=(",", ":")) + ";\n")
+            ord_line = ("const ORDER = "
+                        + json.dumps(order, separators=(",", ":")) + ";\n")
+            lines = html.splitlines(keepends=True)
+            hits = 0
+            for i, line in enumerate(lines):
+                if line.startswith("const SPECTRA = "):
+                    lines[i] = sp_line
+                    hits += 1
+                elif line.startswith("const ORDER = "):
+                    lines[i] = ord_line
+                    hits += 1
+            if hits != 2:
+                raise SystemExit(f"index.html: expected the SPECTRA and ORDER "
+                                 f"lines, matched {hits}")
+            html = "".join(lines)
+
             # Edit -> the browser editor (the source build points at the local
             # app on :8770 and hides itself off-localhost)
             old_edit = ("  editBtn.href = 'http://localhost:8770/?gid=' + d.graph;\n"

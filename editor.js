@@ -105,16 +105,15 @@ async function loadPage() {
     INK = null; waypoints = [];      // rebuilt lazily for the new page
     pageScale = frame.w / imgW;           // original px per displayed scan px
     document.getElementById('loading').style.display = 'none';
-    resize(); fit(); setMode('add'); renderSwatches(); refresh();
-    history = []; histAt = -1;
-    snapshot('Published', '');
-    // seat the reconstruction on the ink before anyone starts editing
+    resize(); fit(); setMode('add'); renderSwatches();
+    // Seat the reconstruction on the ink BEFORE the baseline snapshot, so that
+    // undoing all the way back cannot strand every dot above the printed line
+    // again — restore() replays stored positions and never re-fits.
     let snapped = 0;
     for (const c of curves) snapped += snapToInk(c).moved;
-    if (snapped || refit) {
-      refresh(); draw();
-      snapshot('Fitted to ink', `${snapped} dots`);
-    }
+    refresh(); draw();
+    history = []; histAt = -1;
+    snapshot('Fitted to ink', snapped ? `${snapped} dots` : 'already seated');
     loadCommunityEdit();
   };
   img.onerror = () => {
@@ -868,21 +867,21 @@ function addCurve(color) {
  * would erase it and produce a figure matching neither the scan nor the dots.
  * A curve is only stretched when it is evidently meant to touch the rule.
  */
-const APEX_LIFT_FLOOR = 0.9;
-
-function normalised(p) {
-  if (!p || !p.wl.length) return p;
-  let mx = -Infinity;
-  for (const v of p.inten) if (v > mx) mx = v;
-  // scale in either direction: seating the dots on the ink can leave the apex
-  // a hair over the rule as easily as under it
-  if (!(mx > 0) || mx < APEX_LIFT_FLOOR || Math.abs(mx - 1) < 1e-9) return p;
-  return { wl: p.wl, inten: p.inten.map(v => v / mx), rawPeak: mx };
-}
-
+/**
+ * Nothing is rescaled here, and that is the whole point.
+ *
+ * This function used to divide each curve by its own apex so the peak read
+ * exactly 1.00.  Because that is a *global* divide, it moved every point by a
+ * factor — the shift largest at the maximum and vanishing at the baseline.
+ * snapToInk would seat the dots on the printed stroke and refresh() would
+ * immediately re-inflate the numbers off it, so the canvas and the exports
+ * disagreed on the same screen: dots on the ink, figures and CSV and Excel and
+ * the saved edit all above it.  Whatever the plate prints is the measurement;
+ * a peak at 0.99 is 0.99.  Use "Peak → 1.00" to normalise deliberately.
+ */
 function refresh() {
   derived = {};
-  for (const c of curves) derived[c.key] = normalised(physical(c));
+  for (const c of curves) derived[c.key] = physical(c);
   renderPanel();
   renderSwatches();
   renderPcc();
