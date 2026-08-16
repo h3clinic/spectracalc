@@ -37,16 +37,53 @@
     return b;
   }
 
+  /* Describe how the edit differs from the published curve.  Most real
+   * corrections move a handful of points; without this the banner says an
+   * edit exists but the chart looks untouched and it reads as "nothing
+   * saved". */
+  function describeDiff(gid) {
+    var d = SPECTRA[gid];
+    if (!d || !d._published) return '';
+    var bits = [];
+    [['em', 'emission'], ['ab', 'absorption']].forEach(function (pair) {
+      var P = d._published[pair[0]], E = d[pair[0]];
+      if (!P || !E) return;
+      var pm = new Map(), removed = [], changed = 0, maxD = 0;
+      for (var i = 0; i < P.wl.length; i++) pm.set(P.wl[i].toFixed(1), P.inten[i]);
+      var em2 = new Map();
+      for (var j = 0; j < E.wl.length; j++) em2.set(E.wl[j].toFixed(1), E.inten[j]);
+      pm.forEach(function (v, w) {
+        if (!em2.has(w)) removed.push(parseFloat(w));
+        else { var dd = Math.abs(em2.get(w) - v); if (dd > 1e-9) { changed++; if (dd > maxD) maxD = dd; } }
+      });
+      var added = E.wl.length - (P.wl.length - removed.length);
+      var part = [];
+      if (removed.length) part.push(removed.length + ' removed at ' +
+        Math.min.apply(null, removed).toFixed(1) + '–' + Math.max.apply(null, removed).toFixed(1) + ' nm');
+      if (added > 0) part.push(added + ' added');
+      if (changed) part.push(changed + ' moved, max ' + maxD.toFixed(3));
+      if (part.length) bits.push(pair[1] + ': ' + part.join(', '));
+    });
+    return bits.length ? bits.join(' · ') : 'identical to the published curve';
+  }
+
   function showBanner(gid, meta) {
     var b = banner();
     b.style.display = 'flex';
     b.innerHTML = '';
     var when = meta && meta.ts ? new Date(meta.ts).toLocaleString() : '';
     var who = (meta && meta.author) || 'anonymous';
-    var txt = el('span', {},
-      'Showing a community edit by ' + who + (when ? ' · ' + when : '') +
-      (meta && meta.note ? ' — ' + meta.note : ''));
+    var txt = el('span', {});
     txt.style.flex = '1 1 260px';
+    txt.appendChild(el('b', {}, 'Community edit by ' + who));
+    txt.appendChild(document.createTextNode(
+      (when ? ' · ' + when : '') + (meta && meta.note ? ' — ' + meta.note : '')));
+    var diff = describeDiff(gid);
+    if (diff) {
+      var dl = el('div', {}, diff);
+      dl.style.cssText = 'font-size:12px;opacity:.85;margin-top:2px;';
+      txt.appendChild(dl);
+    }
     b.appendChild(txt);
 
     var seeOrig = el('button', { type: 'button' }, 'Show published');
@@ -106,10 +143,15 @@
   function wireDownloads(gid) {
     var edited = !!index[gid];
     var dc = document.getElementById('dlCsvBtn');
-    if (dc) dc.href = edited ? '/api/csv?gid=' + gid : 'downloads/csv/' + gid + '.csv';
+    if (dc) {
+      dc.href = edited ? '/api/csv?gid=' + gid : 'downloads/csv/' + gid + '.csv';
+      dc.textContent = edited ? '⇩ CSV (edited)' : '⇩ CSV';
+      dc.title = edited ? 'CSV built from the current community edit' : '';
+    }
     var dx = document.getElementById('dlXlsxBtn');
     if (dx) {
       dx.href = edited ? '/api/xlsx?gid=' + gid : 'downloads/xlsx/' + gid + '.xlsx';
+      dx.textContent = edited ? '⇩ Excel (edited)' : '⇩ Excel';
       dx.title = edited ? 'Excel built from the current community edit' : '';
     }
   }
@@ -153,21 +195,38 @@
         g.drawImage(scan, 0, 0);
         var k = scan.width / f.w;               // original page px -> scan px
         var r = Math.max(1.4, 6 * k);           // the batch overlay used r=6 at full size
-        [['em', 'rgb(235,60,60)'], ['ab', 'rgb(40,160,40)']].forEach(function (pair) {
-          var c = d[pair[0]];
-          if (!c || !c.wl) return;
-          g.fillStyle = pair[1];
-          for (var i = 0; i < c.wl.length; i += 2) {
-            var wn = 1e7 / c.wl[i];
-            var px = (wn - d.xcal.b) / d.xcal.a;
-            var py = f.y_bottom - (c.inten[i]) * (f.y_bottom - f.y_top);
+        function plot(curve, colour, radius) {
+          if (!curve || !curve.wl) return;
+          g.fillStyle = colour;
+          for (var i = 0; i < curve.wl.length; i += 2) {
+            var px = (1e7 / curve.wl[i] - d.xcal.b) / d.xcal.a;
+            var py = f.y_bottom - curve.inten[i] * (f.y_bottom - f.y_top);
             var x = px * k, y = py * k;
             if (x < -20 || y < -20 || x > cv.width + 20 || y > cv.height + 20) continue;
-            g.beginPath(); g.arc(x, y, r, 0, 6.2832); g.fill();
+            g.beginPath(); g.arc(x, y, radius, 0, 6.2832); g.fill();
           }
-        });
-        cv.title = (index[gid] ? 'Community edit' : 'Published digitization') +
-                   ' replotted on the raw scan';
+        }
+        // where an edit is showing, lay the published trace underneath in grey:
+        // anything the edit removed stays grey, so a small correction is
+        // visible instead of looking like nothing happened
+        if (d._published && index[gid]) {
+          plot(d._published.em, 'rgba(120,120,120,.55)', r * 1.35);
+          plot(d._published.ab, 'rgba(120,120,120,.55)', r * 1.35);
+        }
+        plot(d.em, 'rgb(235,60,60)', r);
+        plot(d.ab, 'rgb(40,160,40)', r);
+        cv.title = (index[gid] ? 'Community edit (grey = the published trace underneath)'
+                                : 'Published digitization') + ' replotted on the raw scan';
+        var cap = document.getElementById('overlayCap');
+        if (index[gid]) {
+          if (!cap) {
+            cap = el('div', { id: 'overlayCap' });
+            cap.style.cssText = 'font-size:12px;opacity:.8;margin-top:6px;';
+            cv.parentNode.insertBefore(cap, cv.nextSibling);
+          }
+          cap.textContent = 'Grey dots are the published digitization; coloured dots are the community edit.';
+          cap.style.display = '';
+        } else if (cap) { cap.style.display = 'none'; }
       };
       scan.onerror = function () { /* no scan -> the shipped PNG stays visible */ };
       scan.src = 'scans/' + gid + '.webp';
@@ -209,6 +268,14 @@
     });
   }
 
+  // the sidebar is rebuilt on every search, which wipes the edit markers
+  function watchSidebar() {
+    var host = document.querySelector('.pcc-compound-list');
+    if (!host || host._cwatch) return;
+    host._cwatch = true;
+    new MutationObserver(function () { markSidebar(); }).observe(host, { childList: true });
+  }
+
   function boot() {
     // SPECTRA is a top-level `const` in the viewer, so it is a lexical
     // global — it never appears on `window`.  Probe the binding itself.
@@ -222,6 +289,7 @@
       .then(function (j) {
         index = (j && j.edits) || {};
         markSidebar();
+        watchSidebar();
         if (window._curId) wrapped(window._curId);
       })
       .catch(function () { /* offline or API down — the published site still works */ });
