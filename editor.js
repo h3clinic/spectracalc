@@ -751,14 +751,25 @@ function addCurve(color) {
   toast(`"${name}" added`);
 }
 
-/** Peak-normalised copy of a derived curve: the plates are normalised
- *  compilations, so every figure and every export should top out at 1.00 even
- *  when the printed apex falls a little short of the rule. */
+/**
+ * Lift a curve whose printed apex falls just short of the 1.00 rule.
+ *
+ * Only that case.  Intensities already come from the frame, so they are on the
+ * plate's own scale, and a CURVE I / CURVE II comparison plate deliberately
+ * draws its second trace lower — toluene's second emission peaks at 0.456 of
+ * the first, and that ratio is the measurement.  Rescaling every curve to 1.0
+ * would erase it and produce a figure matching neither the scan nor the dots.
+ * A curve is only stretched when it is evidently meant to touch the rule.
+ */
+const APEX_LIFT_FLOOR = 0.9;
+
 function normalised(p) {
   if (!p || !p.wl.length) return p;
   let mx = -Infinity;
   for (const v of p.inten) if (v > mx) mx = v;
-  if (!(mx > 0) || Math.abs(mx - 1) < 1e-9) return p;
+  // scale in either direction: seating the dots on the ink can leave the apex
+  // a hair over the rule as easily as under it
+  if (!(mx > 0) || mx < APEX_LIFT_FLOOR || Math.abs(mx - 1) < 1e-9) return p;
   return { wl: p.wl, inten: p.inten.map(v => v / mx), rawPeak: mx };
 }
 

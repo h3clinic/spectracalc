@@ -180,13 +180,20 @@ async function history(gid) {
 
 /** Export columns for a stored record: the standard curves plus any the
  *  contributor drew themselves, in a stable order. */
-/** Peak-normalise a curve for export.  The atlas is a normalised compilation,
- *  so every released figure and workbook tops out at 1.00 even where the plate
- *  draws its apex slightly under the rule. */
+/**
+ * Lift a curve whose printed apex falls just short of the 1.00 rule — and only
+ * that case.  A CURVE I / CURVE II plate draws its second trace lower on
+ * purpose (toluene's second emission peaks at 0.456 of the first); rescaling it
+ * to unity would destroy the ratio the plate exists to show.
+ */
+const APEX_LIFT_FLOOR = 0.9;
+
 function normaliseCurve(c) {
   if (!c || !c.inten || !c.inten.length) return c;
   const mx = Math.max(...c.inten);
-  if (!(mx > 0) || Math.abs(mx - 1) < 1e-9) return c;
+  // scale in either direction: a curve seated on the ink can sit a hair over
+  // the rule as easily as under it
+  if (!(mx > 0) || mx < APEX_LIFT_FLOOR || Math.abs(mx - 1) < 1e-9) return c;
   return { wl: c.wl, inten: c.inten.map(v => Math.round((v / mx) * 1e6) / 1e6) };
 }
 
