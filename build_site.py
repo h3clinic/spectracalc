@@ -85,20 +85,31 @@ def build_downloads(spectra, order):
     for gid in order:
         s = spectra[gid]
         em, ab = s.get("em", {}), s.get("ab", {})
+        # the second emission trace on a CURVE I / II plate is a measurement in
+        # its own right and was being dropped from every download
+        em2 = s.get("em2") or {}
         ew, ei = em.get("wl", []), em.get("inten", [])
         aw, ai = ab.get("wl", []), ab.get("inten", [])
+        e2w, e2i = em2.get("wl", []), em2.get("inten", [])
         with open(os.path.join(csv_dir, gid + ".csv"), "w", newline="") as fp:
             w = csv.writer(fp)
             w.writerow([f"{s.get('name', gid)} — Berlman {gid}"])
-            w.writerow(["emission_wavelength_nm", "emission_intensity",
-                        "absorption_wavelength_nm", "absorption_intensity"])
-            for i in range(max(len(ew), len(aw))):
-                w.writerow([
+            head = ["emission_wavelength_nm", "emission_intensity",
+                    "absorption_wavelength_nm", "absorption_intensity"]
+            if e2w:
+                head += ["emission_ii_wavelength_nm", "emission_ii_intensity"]
+            w.writerow(head)
+            for i in range(max(len(ew), len(aw), len(e2w))):
+                row = [
                     f"{ew[i]:.1f}" if i < len(ew) else "",
                     f"{ei[i]:.6f}" if i < len(ei) else "",
                     f"{aw[i]:.1f}" if i < len(aw) else "",
                     f"{ai[i]:.6f}" if i < len(ai) else "",
-                ])
+                ]
+                if e2w:
+                    row += [f"{e2w[i]:.1f}" if i < len(e2w) else "",
+                            f"{e2i[i]:.6f}" if i < len(e2i) else ""]
+                w.writerow(row)
 
     # Build the workbooks from the canonical dataset rather than copying
     # data/spectra/ — those were written by an earlier regen and had drifted

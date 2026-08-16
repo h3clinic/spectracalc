@@ -517,6 +517,28 @@
       </div>
     </div>
 
+    <!-- Second Fluorescence Spectrum (CURVE II plates).  18 pages carry a
+         second emission trace.  The viewer counted it — "Emission Curves: 2" —
+         but had no canvas to draw it on, so the curve existed in the data, in
+         the editor and in the downloads while the page it belongs to showed
+         one spectrum. -->
+    <div class="pcc-spectrum-section" id="ems2Section" style="display:none">
+      <h3>Fluorescence Spectrum &mdash; second curve</h3>
+      <div class="pcc-chart-row">
+        <div class="pcc-chart-meta">
+          <table>
+            <tr><td>Peak</td><td id="ems2Lam">&mdash;</td></tr>
+            <tr><td>Relative height</td><td id="ems2Rel">&mdash;</td></tr>
+            <tr><td>Source</td><td>Berlman (1971)</td></tr>
+          </table>
+        </div>
+        <div class="pcc-chart-wrap" id="ems2ChartWrap">
+          <canvas id="ems2Canvas" width="720" height="320"></canvas>
+          <div class="pcc-chart-tooltip" id="ems2Tip"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Placeholder -->
     <div id="placeholder" style="text-align:center;padding:80px 20px;color:var(--pcc-text-light);">
       <div style="font-size:48px;margin-bottom:16px;opacity:0.3;">&#9878;</div>
@@ -640,6 +662,24 @@ function showCompound(id) {
     drawChart('emsCanvas', 'emsTip', 'emsChartWrap', d.em.wl, d.em.inten || d.em.v, '#C0392B', 'Emission');
   } else {
     emsS.style.display = 'none';
+  }
+
+  // Second emission curve — the same orange the editor draws it in, so the
+  // page and the editor agree about which trace is which.
+  const ems2S = document.getElementById('ems2Section');
+  const em2 = d.em2 && d.em2.wl && d.em2.wl.length ? d.em2 : null;
+  if (em2) {
+    const v2 = em2.inten || em2.v;
+    let pk = 0;
+    for (let i = 1; i < v2.length; i++) if (v2[i] > v2[pk]) pk = i;
+    ems2S.style.display = 'block';
+    document.getElementById('ems2Lam').textContent = em2.wl[pk].toFixed(1) + ' nm';
+    // a CURVE I / CURVE II plate draws the second trace lower on purpose, and
+    // that ratio is the measurement — state it rather than hiding it
+    document.getElementById('ems2Rel').textContent = v2[pk].toFixed(3) + ' of full scale';
+    drawChart('ems2Canvas', 'ems2Tip', 'ems2ChartWrap', em2.wl, v2, '#E08A2E', 'Emission II');
+  } else {
+    ems2S.style.display = 'none';
   }
 
   // the unit switch is only meaningful when at least one chart is on screen
