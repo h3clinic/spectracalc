@@ -59,53 +59,96 @@ function zip(files) {
 const esc = (s) => String(s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-function workbook(gid, doc) {
-  const cols = L.curveColumns(doc);
-  const col = (i) => String.fromCharCode(65 + i);
-  const rows = [];
-  const head = [];
-  for (const c of cols) head.push(`${c.name} λ (nm)`, `${c.name} Intensity`);
-  const title = `${gid} — community edit by ${doc.author || 'anonymous'}`;
-  rows.push(`<row r="1"><c r="A1" t="inlineStr"><is><t>${esc(title)}</t></is></c></row>`);
-  rows.push(`<row r="2"><c r="A2" t="inlineStr"><is><t>${esc(
-    (doc.note ? doc.note + ' · ' : '') +
-    'Berlman, Handbook of Fluorescence Spectra, 2nd Ed. (1971)')}</t></is></c></row>`);
-  rows.push(`<row r="4">` + head.map((h, i) =>
-    `<c r="${col(i)}4" t="inlineStr"><is><t>${esc(h)}</t></is></c>`).join('') + `</row>`);
-  const n = cols.length ? Math.max(...cols.map(c => c.wl.length)) : 0;
-  for (let i = 0; i < n; i++) {
-    const r = i + 5, cells = [];
-    cols.forEach((c, ci) => {
-      if (c.wl[i] === undefined) return;
-      cells.push(`<c r="${col(ci * 2)}${r}"><v>${c.wl[i].toFixed(1)}</v></c>`);
-      cells.push(`<c r="${col(ci * 2 + 1)}${r}"><v>${c.inten[i].toFixed(6)}</v></c>`);
-    });
-    rows.push(`<row r="${r}">${cells.join('')}</row>`);
-  }
-  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+/** Excel forbids : \ / ? * [ ] in sheet names, and caps them at 31 chars. */
+function sheetName(name, used) {
+  let base = String(name || 'Curve').replace(/[:\\\/?*\[\]]/g, ' ').trim().slice(0, 31) || 'Curve';
+  let n = base, i = 2;
+  while (used.has(n.toLowerCase())) n = base.slice(0, 28) + ' ' + i++;
+  used.add(n.toLowerCase());
+  return n;
+}
+
+function sheetXml(rows) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <cols><col min="1" max="16" width="21" customWidth="1"/></cols>
 <sheetData>${rows.join('')}</sheetData></worksheet>`;
+}
 
-  return zip([
+function workbook(gid, doc) {
+  const cols = L.curveColumns(doc);
+  const col = (i) => String.fromCharCode(65 + i);
+  const title = `${gid} — community edit by ${doc.author || 'anonymous'}`;
+  const source = (doc.note ? doc.note + ' · ' : '') +
+                 'Berlman, Handbook of Fluorescence Spectra, 2nd Ed. (1971)';
+
+  // one sheet per curve, so a curve someone adds arrives as its own tab
+  // rather than as two more columns nobody notices
+  const used = new Set();
+  const sheets = cols.map((c) => {
+    const rows = [
+      `<row r="1"><c r="A1" t="inlineStr"><is><t>${esc(title + ' — ' + c.name)}</t></is></c></row>`,
+      `<row r="2"><c r="A2" t="inlineStr"><is><t>${esc(source)}</t></is></c></row>`,
+      `<row r="4">` +
+        `<c r="A4" t="inlineStr"><is><t>Wavelength (nm)</t></is></c>` +
+        `<c r="B4" t="inlineStr"><is><t>Intensity</t></is></c></row>`,
+    ];
+    for (let i = 0; i < c.wl.length; i++) {
+      const r = i + 5;
+      rows.push(`<row r="${r}">` +
+        `<c r="A${r}"><v>${c.wl[i].toFixed(1)}</v></c>` +
+        `<c r="B${r}"><v>${c.inten[i].toFixed(6)}</v></c></row>`);
+    }
+    return { name: sheetName(c.name, used), xml: sheetXml(rows) };
+  });
+
+  // …plus a combined sheet, for anyone who wants them side by side
+  if (cols.length > 1) {
+    const head = [];
+    for (const c of cols) head.push(`${c.name} λ (nm)`, `${c.name} Intensity`);
+    const rows = [
+      `<row r="1"><c r="A1" t="inlineStr"><is><t>${esc(title)}</t></is></c></row>`,
+      `<row r="2"><c r="A2" t="inlineStr"><is><t>${esc(source)}</t></is></c></row>`,
+      `<row r="4">` + head.map((h, i) =>
+        `<c r="${col(i)}4" t="inlineStr"><is><t>${esc(h)}</t></is></c>`).join('') + `</row>`,
+    ];
+    const n = Math.max(...cols.map(c => c.wl.length));
+    for (let i = 0; i < n; i++) {
+      const r = i + 5, cells = [];
+      cols.forEach((c, ci) => {
+        if (c.wl[i] === undefined) return;
+        cells.push(`<c r="${col(ci * 2)}${r}"><v>${c.wl[i].toFixed(1)}</v></c>`);
+        cells.push(`<c r="${col(ci * 2 + 1)}${r}"><v>${c.inten[i].toFixed(6)}</v></c>`);
+      });
+      rows.push(`<row r="${r}">${cells.join('')}</row>`);
+    }
+    sheets.push({ name: sheetName('All curves', used), xml: sheetXml(rows) });
+  }
+  if (!sheets.length) sheets.push({ name: 'Spectrum', xml: sheetXml([]) });
+
+  const files = [
     ['[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
-<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`],
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
+sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') +
+`</Types>`],
     ['_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
     ['xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
- xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<sheets><sheet name="Spectrum" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>` +
+sheets.map((sh, i) => `<sheet name="${esc(sh.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') +
+`</sheets></workbook>`],
     ['xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`],
-    ['xl/worksheets/sheet1.xml', sheet],
-  ]);
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('') +
+`</Relationships>`],
+  ];
+  sheets.forEach((sh, i) => files.push([`xl/worksheets/sheet${i + 1}.xml`, sh.xml]));
+  return zip(files);
 }
 
 module.exports = async (req, res) => {

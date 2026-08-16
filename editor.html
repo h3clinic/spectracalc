@@ -161,6 +161,26 @@
     border-radius: 6px; padding: 8px 10px; font-size: 11.5px; line-height: 1.5;
   }
 
+  /* PhotochemCAD-style figures, one per curve, below the editor */
+  .pccpanel {
+    background: var(--surface); border-top: 1px solid var(--border);
+    padding: 16px 18px 20px; flex-shrink: 0; max-height: 42vh; overflow-y: auto;
+  }
+  .pccpanel h2 {
+    font-size: 13px; font-weight: 600; color: var(--text2);
+    text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px;
+  }
+  .pcchint { font-size: 11.5px; color: var(--text2); margin-bottom: 12px; }
+  .pccgrid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px;
+  }
+  .pcccard { background: #fff; border-radius: 8px; padding: 10px 10px 6px; }
+  .pcccard canvas { display: block; width: 100%; height: 210px; }
+  .pccfoot {
+    display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;
+  }
+  .pccfoot .btn { flex: 1; justify-content: center; font-size: 11.5px; }
+
   .status {
     height: 24px; background: var(--surface); border-top: 1px solid var(--border);
     display: flex; align-items: center; gap: 18px; padding: 0 12px;
@@ -285,6 +305,13 @@
   <span id="sbPos"></span>
   <span>Zoom: <b id="sbZoom">—</b></span>
   <span style="margin-left:auto">1 Add · 2 Erase · 3 Pan · S scope · [ ] brush · Ctrl+Z undo · 0 fit</span>
+</div>
+
+<div class="pccpanel" id="pccPanel">
+  <h2>PhotochemCAD-style figures</h2>
+  <p class="pcchint">One figure per curve, drawn from the current dots — including
+     any spectrum you add. These update as you edit.</p>
+  <div class="pccgrid" id="pccGrid"></div>
 </div>
 
 <div class="toast" id="toast"></div>

@@ -819,13 +819,34 @@ function drawChart(canvasId, tipId, wrapId, wl, vals, color, label) {
   ctx.textAlign = 'left';
   ctx.fillText(label, ml + pw - 102, mt + 14);
 
-  // Tooltip
+  // Readout.  The cursor is free to wander the grid, so a bare coordinate
+  // box tells you where the MOUSE is, not where the SPECTRUM is.  Snap a
+  // marker to the nearest sample and drop a guide to the axis, so the number
+  // in the tooltip is visibly the point being read.
+  // The marker lives on its own layer above the plot.  Drawing it into the
+  // chart itself means every move has to restore the pixels underneath, and a
+  // single size mismatch leaves a smear of stale markers across the trace.
+  let ov = wrap.querySelector('canvas.hover-layer');
+  if (!ov) {
+    ov = document.createElement('canvas');
+    ov.className = 'hover-layer';
+    ov.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;';
+    if (getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative';
+    wrap.appendChild(ov);
+  }
+  ov.width = W; ov.height = H;
+  const octx = ov.getContext('2d');
+  const clearMarker = () => octx.clearRect(0, 0, W, H);
+  clearMarker();
+
   wrap.onmousemove = function(e) {
     const rect = canvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left) * (W / rect.width);
     const my = (e.clientY - rect.top) * (H / rect.height);
     if (mx < ml || mx > ml + pw || my < mt || my > mt + ph) {
-      tip.style.display = 'none'; return;
+      tip.style.display = 'none';
+      clearMarker();
+      return;
     }
     const dataX = xMin + (mx - ml) / pw * (xMax - xMin);
     let closest = 0, minD = Infinity;
@@ -833,6 +854,23 @@ function drawChart(canvasId, tipId, wrapId, wl, vals, color, label) {
       const dd = Math.abs(wl[i] - dataX);
       if (dd < minD) { minD = dd; closest = i; }
     }
+    const px = toX(wl[closest]), py = toY(vals[closest]);
+
+    clearMarker();
+    // guides down to each axis, so the tooltip number is visibly this point
+    octx.strokeStyle = 'rgba(128,128,128,.6)';
+    octx.setLineDash([4, 4]);
+    octx.lineWidth = 1;
+    octx.beginPath();
+    octx.moveTo(px, py); octx.lineTo(px, mt + ph);
+    octx.moveTo(ml, py); octx.lineTo(px, py);
+    octx.stroke();
+    octx.setLineDash([]);
+    // the marker itself, ringed so it reads on top of the trace
+    octx.beginPath(); octx.arc(px, py, 6, 0, 6.2832);
+    octx.fillStyle = '#fff'; octx.fill();
+    octx.lineWidth = 3; octx.strokeStyle = color; octx.stroke();
+
     // wl[] holds whatever unit the axis is in — labelling it 'nm' in the
     // default cm-1 mode reported wavenumbers as wavelengths
     tip.textContent = (window.chartUnit === 'wn'
@@ -842,7 +880,10 @@ function drawChart(canvasId, tipId, wrapId, wl, vals, color, label) {
     tip.style.left = (e.clientX - wrap.getBoundingClientRect().left + 12) + 'px';
     tip.style.top = (e.clientY - wrap.getBoundingClientRect().top - 20) + 'px';
   };
-  wrap.onmouseleave = () => { tip.style.display = 'none'; };
+  wrap.onmouseleave = () => {
+    tip.style.display = 'none';
+    clearMarker();
+  };
 }
 
 buildSidebar();

@@ -699,6 +699,116 @@ function refresh() {
   for (const c of curves) derived[c.key] = physical(c);
   renderPanel();
   renderSwatches();
+  renderPcc();
+}
+
+/* ── PhotochemCAD-style figures ───────────────────────────────────────────
+ * One publication-style panel per curve, redrawn from the current dots, so a
+ * spectrum you add appears here as its own figure rather than being folded
+ * silently into the existing ones.
+ */
+function pccFigure(cv, wl, inten, color, title) {
+  const w = cv.width = Math.max(2, cv.clientWidth) * 2;
+  const h = cv.height = Math.max(2, cv.clientHeight) * 2;
+  const g = cv.getContext('2d');
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
+  const pad = { l: 78, r: 26, t: 34, b: 62 };
+  const pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
+  if (!wl.length) return;
+
+  const lo = Math.min(...wl), hi = Math.max(...wl);
+  const X = v => pad.l + (v - lo) / ((hi - lo) || 1) * pw;
+  const Y = v => pad.t + (1 - v) * ph;
+
+  g.font = '20px system-ui'; g.fillStyle = '#222';
+  g.textAlign = 'left';
+  g.fillText(title, pad.l, 22);
+
+  // 0.1 gridlines, as the printed plates are ruled
+  g.strokeStyle = '#e4e4e4'; g.lineWidth = 1;
+  g.fillStyle = '#555'; g.font = '17px system-ui';
+  for (let t = 0; t <= 10; t++) {
+    const y = Y(t / 10);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(pad.l + pw, y); g.stroke();
+    g.textAlign = 'right';
+    g.fillText((t / 10).toFixed(1), pad.l - 8, y + 6);
+  }
+  const step = Math.max(5, Math.round((hi - lo) / 6 / 5) * 5);
+  g.textAlign = 'center';
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+    const x = X(v);
+    g.strokeStyle = '#efefef';
+    g.beginPath(); g.moveTo(x, pad.t); g.lineTo(x, pad.t + ph); g.stroke();
+    g.fillStyle = '#555';
+    g.fillText(String(Math.round(v)), x, pad.t + ph + 26);
+  }
+  g.strokeStyle = '#333'; g.lineWidth = 2;
+  g.strokeRect(pad.l, pad.t, pw, ph);
+
+  g.fillStyle = '#333'; g.font = '18px system-ui';
+  g.textAlign = 'center';
+  g.fillText('Wavelength (nm)', pad.l + pw / 2, h - 16);
+  g.save();
+  g.translate(20, pad.t + ph / 2); g.rotate(-Math.PI / 2);
+  g.fillText('Normalized intensity', 0, 0);
+  g.restore();
+
+  // smoothed trace — two light binomial passes with the peak pinned, the same
+  // treatment the published viewer uses
+  const sm = inten.slice();
+  for (let pass = 0; pass < 2; pass++) {
+    const prev = sm.slice();
+    for (let i = 1; i < sm.length - 1; i++)
+      sm[i] = 0.25 * prev[i - 1] + 0.5 * prev[i] + 0.25 * prev[i + 1];
+  }
+  const pk = inten.indexOf(Math.max(...inten));
+  if (pk >= 0) sm[pk] = inten[pk];
+
+  g.strokeStyle = color; g.lineWidth = 3.2;
+  g.beginPath();
+  wl.forEach((v, i) => (i ? g.lineTo(X(v), Y(sm[i])) : g.moveTo(X(v), Y(sm[i]))));
+  g.stroke();
+}
+
+function renderPcc() {
+  const grid = document.getElementById('pccGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  const live = curves.filter(c => derived[c.key] && derived[c.key].wl.length);
+  if (!live.length) {
+    grid.innerHTML = '<p class="pcchint">No curves yet — add dots to see figures here.</p>';
+    return;
+  }
+  for (const c of live) {
+    const p = derived[c.key];
+    const card = document.createElement('div');
+    card.className = 'pcccard';
+    const cv = document.createElement('canvas');
+    card.appendChild(cv);
+
+    const foot = document.createElement('div');
+    foot.className = 'pccfoot';
+    const csvBtn = document.createElement('button');
+    csvBtn.className = 'btn';
+    csvBtn.textContent = '⬇ CSV';
+    csvBtn.onclick = () => {
+      const rows = [['wavelength_nm', 'intensity']];
+      for (let i = 0; i < p.wl.length; i++)
+        rows.push([p.wl[i].toFixed(1), p.inten[i].toFixed(6)]);
+      save(new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }),
+           `${safe(meta.name)}__${safe(c.name)}.csv`);
+    };
+    const pngBtn = document.createElement('button');
+    pngBtn.className = 'btn';
+    pngBtn.textContent = '⬇ Figure';
+    pngBtn.onclick = () => cv.toBlob(b => save(b, `${safe(meta.name)}__${safe(c.name)}.png`));
+    foot.appendChild(csvBtn); foot.appendChild(pngBtn);
+    card.appendChild(foot);
+    grid.appendChild(card);
+
+    pccFigure(cv, p.wl, p.inten, c.color, `${meta.name} — ${c.name}`);
+  }
 }
 
 /* ── downloads ───────────────────────────────────────────────────────── */

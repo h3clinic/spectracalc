@@ -185,8 +185,77 @@ def _split_merged_toks(toks):
     return out
 
 
+def _consensus_linfit(px, wn, tol=400.0, min_inliers=3):
+    """Largest set of tick labels that agree on one straight line.
+
+    A trimmed robust fit copes with a single misread tick, but OCR on a worn
+    plate can garble two of five (graph-175 reads 3500 as 3300 *and* 2500 as
+    2900), and the trim is then outvoted.  Printed ticks are exactly collinear,
+    so instead of trimming outliers we search for the largest consensus: every
+    pair of labels proposes a line, and the line the most labels sit on wins.
+    Three agreeing ticks pin the axis; the misreads simply never join a set.
+    """
+    n = len(px)
+    if n < min_inliers:
+        return None
+    best = None
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = px[j] - px[i]
+            if abs(dx) < 1e-6:
+                continue
+            a = (wn[j] - wn[i]) / dx
+            b = wn[i] - a * px[i]
+            keep = [k for k in range(n) if abs(wn[k] - (a * px[k] + b)) <= tol]
+            if len(keep) < min_inliers:
+                continue
+            xs = np.array([px[k] for k in keep], float)
+            ys = np.array([wn[k] for k in keep], float)
+            aa, bb = np.polyfit(xs, ys, 1)
+            rms = float(np.sqrt(np.mean((ys - (aa * xs + bb)) ** 2)))
+            score = (len(keep), -rms)
+            if best is None or score > best[0]:
+                best = (score, aa, bb, rms, len(keep))
+    if best is None:
+        return None
+    _, a, b, rms, k = best
+    return float(a), float(b), rms, k
+
+
+def _top_axis_xcal(gray, frame):
+    """The top wavelength axis as a wavenumber calibration, or None.
+
+    Used whenever the bottom axis cannot be read.  The two axes are printed
+    independently, so a page whose wave-number labels are smudged or cropped is
+    often perfectly legible along the top in angstroms.
+    """
+    xl, xr = frame["x_left"], frame["x_right"]
+    top = _calibrate_x_from_top(gray, frame)
+    if top is None:
+        return None
+    # four agreeing ticks is the comfortable case; three is accepted only when
+    # they are essentially exactly collinear, which printed ticks are and a
+    # coincidence of misreads is not
+    if top["n"] < 3 or (top["n"] == 3 and top["rmse"] > 60.0):
+        return None
+    ta, tb = top["a"], top["b"]
+    lo, hi = sorted([ta * xl + tb, ta * xr + tb])
+    if lo < 5000 or hi > 65000 or hi - lo < 5000:
+        return None
+    if top["rmse"] > max(150.0, 0.008 * (hi - lo)):
+        return None
+    return dict(a=ta, b=tb, rmse=top["rmse"], n=top["n"],
+                lo=ta * xl + tb, hi=ta * xr + tb, source="top_axis")
+
+
 def calibrate_x(gray, frame):
-    """Bottom wave-number axis: pixel_x -> wavenumber (cm^-1)."""
+    """Bottom wave-number axis: pixel_x -> wavenumber (cm^-1).
+
+    Every route out of here that cannot produce a trustworthy bottom fit tries
+    the top wavelength axis before giving up.  Previously only the *poor fit*
+    branch did, so a page whose bottom labels were unreadable at all was
+    withheld even when its top axis was pristine.
+    """
     xl, xr, yb = frame["x_left"], frame["x_right"], frame["y_bottom"]
     h = gray.shape[0]
     toks = _ocr_numbers(gray, xl - 50, yb + 2, xr + 50, yb + int(0.032 * h))
@@ -194,28 +263,22 @@ def calibrate_x(gray, frame):
     pts = sorted((cx, float(t)) for (t, cx, cy, *_) in toks
                  if len(t) in (4, 5) and "." not in t and 8000 <= float(t) <= 55000)
     if len(pts) < 2:
-        return None
+        return _top_axis_xcal(gray, frame)
     fit = _robust_linfit([p[0] for p in pts], [p[1] for p in pts])
     if fit is None:
-        return None
+        return _top_axis_xcal(gray, frame)
     a, b, rmse, n = fit
     lo, hi = a * xl + b, a * xr + b
     if lo > hi:
         lo, hi = hi, lo
     if lo < 5000 or hi > 65000 or hi - lo < 5000:
-        return None
+        return _top_axis_xcal(gray, frame)
     # quality gate: a healthy tick fit lands within tens of cm-1; hundreds
     # means misread ticks won the fit and every exported wavelength is wrong.
     # When the bottom axis is unreadable, fall back to the independent top
     # wavelength axis rather than exporting corrupt wavelengths.
     if rmse > max(150.0, 0.008 * (hi - lo)):
-        top = _calibrate_x_from_top(gray, frame)
-        if top is not None and top["n"] >= 4:
-            ta, tb = top["a"], top["b"]
-            tlo, thi = sorted([ta * xl + tb, ta * xr + tb])
-            return dict(a=ta, b=tb, rmse=top["rmse"], n=top["n"],
-                        lo=ta * xl + tb, hi=ta * xr + tb, source="top_axis")
-        return None
+        return _top_axis_xcal(gray, frame)
     result = dict(a=a, b=b, rmse=rmse, n=n, lo=a * xl + b, hi=a * xr + b)
     # cross-check against the TOP wavelength axis (Å): an independent OCR of
     # a different set of printed numbers must agree with the bottom fit
@@ -243,14 +306,24 @@ def _calibrate_x_from_top(gray, frame):
                  if len(t) == 4 and "." not in t and 2000 <= float(t) <= 7000)
     if len(pts) < 3:
         return None
-    fit = _robust_linfit([p[0] for p in pts], [p[1] for p in pts])
-    if fit is None:
-        return None
-    a, b, rmse, n = fit
-    lo, hi = sorted([a * xl + b, a * xr + b])
-    if lo < 5000 or hi > 65000 or hi - lo < 5000 or rmse > 300:
-        return None
-    return dict(a=a, b=b, rmse=rmse, n=n)
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+
+    def _usable(fit):
+        if fit is None:
+            return None
+        a, b, rmse, n = fit
+        lo, hi = sorted([a * xl + b, a * xr + b])
+        if lo < 5000 or hi > 65000 or hi - lo < 5000 or rmse > 300:
+            return None
+        return dict(a=a, b=b, rmse=rmse, n=n)
+
+    out = _usable(_robust_linfit(xs, ys))
+    if out is not None:
+        return out
+    # the trimmed fit lost to multiple misread ticks — fall back to the
+    # largest set of labels that agree on one line
+    return _usable(_consensus_linfit(xs, ys))
 
 
 def calibrate_right_y(gray, frame):
