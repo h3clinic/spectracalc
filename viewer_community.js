@@ -100,14 +100,78 @@
     loaded[gid] = true;
   }
 
-  // point the CSV download at the API, which serves the edited file when one
-  // exists and redirects to the published file when it doesn't
+  // downloads go through the API, which serves the edited file when one exists
+  // and redirects to the published file when it doesn't — so both formats
+  // always carry whatever the page is showing
   function wireDownloads(gid) {
+    var edited = !!index[gid];
     var dc = document.getElementById('dlCsvBtn');
-    if (dc) dc.href = index[gid] ? '/api/csv?gid=' + gid : 'downloads/csv/' + gid + '.csv';
+    if (dc) dc.href = edited ? '/api/csv?gid=' + gid : 'downloads/csv/' + gid + '.csv';
     var dx = document.getElementById('dlXlsxBtn');
-    if (dx && index[gid]) dx.title = 'Excel reflects the published digitization; ' +
-      'the CSV button carries the community edit';
+    if (dx) {
+      dx.href = edited ? '/api/xlsx?gid=' + gid : 'downloads/xlsx/' + gid + '.xlsx';
+      dx.title = edited ? 'Excel built from the current community edit' : '';
+    }
+  }
+
+  /* ── round-trip overlay, rendered live ──────────────────────────────────
+   * The shipped overlay PNG has the published dots burned into it, so after an
+   * edit it showed the OLD trace.  Draw it instead: the clean page scan with
+   * the dots that are actually on screen, pushed back through this page's
+   * frozen calibration — the same inverse transform the batch overlay used.
+   */
+  var frames = null, framesReq = null;
+  function getFrames() {
+    if (frames) return Promise.resolve(frames);
+    if (!framesReq) framesReq = fetch('data/frames.json')
+      .then(function (r) { return r.json(); })
+      .then(function (j) { frames = j; return j; })
+      .catch(function () { return null; });
+    return framesReq;
+  }
+
+  function drawOverlay(gid) {
+    var img = document.getElementById('overlayImg');
+    if (!img) return;
+    var d = SPECTRA[gid];
+    if (!d || !d.xcal) return;
+    getFrames().then(function (fr) {
+      if (!fr || !fr[gid]) return;             // no geometry -> keep the PNG
+      var f = fr[gid];
+      var scan = new Image();
+      scan.onload = function () {
+        var cv = document.getElementById('overlayLive');
+        if (!cv) {
+          cv = document.createElement('canvas');
+          cv.id = 'overlayLive';
+          cv.style.cssText = 'display:block;width:100%;height:auto;border-radius:4px;';
+          img.parentNode.insertBefore(cv, img);
+          img.style.display = 'none';
+        }
+        cv.width = scan.width; cv.height = scan.height;
+        var g = cv.getContext('2d');
+        g.drawImage(scan, 0, 0);
+        var k = scan.width / f.w;               // original page px -> scan px
+        var r = Math.max(1.4, 6 * k);           // the batch overlay used r=6 at full size
+        [['em', 'rgb(235,60,60)'], ['ab', 'rgb(40,160,40)']].forEach(function (pair) {
+          var c = d[pair[0]];
+          if (!c || !c.wl) return;
+          g.fillStyle = pair[1];
+          for (var i = 0; i < c.wl.length; i += 2) {
+            var wn = 1e7 / c.wl[i];
+            var px = (wn - d.xcal.b) / d.xcal.a;
+            var py = f.y_bottom - (c.inten[i]) * (f.y_bottom - f.y_top);
+            var x = px * k, y = py * k;
+            if (x < -20 || y < -20 || x > cv.width + 20 || y > cv.height + 20) continue;
+            g.beginPath(); g.arc(x, y, r, 0, 6.2832); g.fill();
+          }
+        });
+        cv.title = (index[gid] ? 'Community edit' : 'Published digitization') +
+                   ' replotted on the raw scan';
+      };
+      scan.onerror = function () { /* no scan -> the shipped PNG stays visible */ };
+      scan.src = 'scans/' + gid + '.webp';
+    });
   }
 
   var orig = window.showCompound;
@@ -129,6 +193,7 @@
     if (index[id] && loaded[id] === true) showBanner(id, index[id]);
     else { var b = document.getElementById('communityBanner'); if (b) b.style.display = 'none'; }
     wireDownloads(id);
+    drawOverlay(id);
   }
 
   function markSidebar() {
