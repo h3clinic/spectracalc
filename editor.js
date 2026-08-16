@@ -108,6 +108,10 @@ async function loadPage() {
     resize(); fit(); setMode('add'); renderSwatches(); refresh();
     history = []; histAt = -1;
     snapshot('Published', '');
+    // seat the reconstruction on the ink before anyone starts editing
+    let snapped = 0;
+    for (const c of curves) snapped += snapToInk(c).moved;
+    if (snapped) { refresh(); draw(); snapshot('Fitted to ink', `${snapped} dots`); }
     loadCommunityEdit();
   };
   img.onerror = () => {
@@ -344,6 +348,41 @@ function traceBetween(A, B) {
     y = ny;
   }
   return out;
+}
+
+/**
+ * Pull reconstructed dots onto the printed stroke.
+ *
+ * Published intensities are normalised so the peak is 1.0, but several plates
+ * draw their apex a shade under the 1.00 rule (mesitylene stops 22 px short).
+ * Reconstructing straight from the normalised value therefore floats the top
+ * of the curve above the ink, and the page cannot be hand-corrected without
+ * first dragging every apex dot back down.  Snap each dot to the nearest ink
+ * run in its own column; dots over blank paper (print breaks) are left alone.
+ */
+function snapToInk(curve, tol) {
+  if (!INK) buildInk();
+  tol = tol || 26;                       // original page px
+  const tolScan = tol / pageScale;
+  let moved = 0, total = 0;
+  for (let i = 0; i < curve.px.length; i++) {
+    const x = Math.round(curve.px[i] / pageScale);
+    const y = curve.py[i] / pageScale;
+    if (x < 0 || x >= INK.w) continue;
+    total++;
+    let best = null, bestD = Infinity;
+    for (const [a, b] of columnRuns(x)) {
+      // ignore the frame rules: they span the plot and sit at its edges
+      const mid = (a + b) / 2;
+      const d = Math.abs(mid - y);
+      if (d < bestD) { bestD = d; best = mid; }
+    }
+    if (best !== null && bestD <= tolScan && bestD > 0.5) {
+      curve.py[i] = best * pageScale;
+      moved++;
+    }
+  }
+  return { moved, total };
 }
 
 async function addWaypoint(ox, oy) {
@@ -712,9 +751,20 @@ function addCurve(color) {
   toast(`"${name}" added`);
 }
 
+/** Peak-normalised copy of a derived curve: the plates are normalised
+ *  compilations, so every figure and every export should top out at 1.00 even
+ *  when the printed apex falls a little short of the rule. */
+function normalised(p) {
+  if (!p || !p.wl.length) return p;
+  let mx = -Infinity;
+  for (const v of p.inten) if (v > mx) mx = v;
+  if (!(mx > 0) || Math.abs(mx - 1) < 1e-9) return p;
+  return { wl: p.wl, inten: p.inten.map(v => v / mx), rawPeak: mx };
+}
+
 function refresh() {
   derived = {};
-  for (const c of curves) derived[c.key] = physical(c);
+  for (const c of curves) derived[c.key] = normalised(physical(c));
   renderPanel();
   renderSwatches();
   renderPcc();
@@ -1162,8 +1212,11 @@ async function loadCommunityEdit() {
                     color: src.color || '#3B82F6', custom: true, ...toPixels(src) });
     });
     activeIdx = Math.min(activeIdx, curves.length - 1);
+    let snapped = 0;
+    for (const c of curves) snapped += snapToInk(c).moved;
     renderSwatches(); refresh(); draw();
-    snapshot('Loaded edit', doc.author || 'anonymous');
+    snapshot('Loaded edit', (doc.author || 'anonymous') +
+             (snapped ? ` · ${snapped} fitted` : ''));
     if (msg) {
       msg.className = 'svmsg';
       msg.textContent = `Showing the current edit by ${doc.author || 'anonymous'}` +

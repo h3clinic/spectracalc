@@ -180,18 +180,29 @@ async function history(gid) {
 
 /** Export columns for a stored record: the standard curves plus any the
  *  contributor drew themselves, in a stable order. */
+/** Peak-normalise a curve for export.  The atlas is a normalised compilation,
+ *  so every released figure and workbook tops out at 1.00 even where the plate
+ *  draws its apex slightly under the rule. */
+function normaliseCurve(c) {
+  if (!c || !c.inten || !c.inten.length) return c;
+  const mx = Math.max(...c.inten);
+  if (!(mx > 0) || Math.abs(mx - 1) < 1e-9) return c;
+  return { wl: c.wl, inten: c.inten.map(v => Math.round((v / mx) * 1e6) / 1e6) };
+}
+
 function curveColumns(doc) {
   const out = [];
   for (const [key, name] of [['em', 'Emission'], ['ab', 'Absorption'], ['em2', 'Emission II']]) {
-    const c = doc[key];
+    const c = normaliseCurve(doc[key]);
     if (c && c.wl && c.wl.length)
       out.push({ label: key === 'em2' ? 'emission_ii' : name.toLowerCase(), name, wl: c.wl, inten: c.inten });
   }
-  for (const c of doc.extra || []) {
+  for (const raw of doc.extra || []) {
+    const c = normaliseCurve(raw);
     if (!c || !c.wl || !c.wl.length) continue;
     out.push({
-      label: String(c.name || 'curve').replace(/[^A-Za-z0-9]+/g, '_').toLowerCase(),
-      name: c.name || 'curve', wl: c.wl, inten: c.inten,
+      label: String(raw.name || 'curve').replace(/[^A-Za-z0-9]+/g, '_').toLowerCase(),
+      name: raw.name || 'curve', wl: c.wl, inten: c.inten,
     });
   }
   return out;
@@ -199,5 +210,5 @@ function curveColumns(doc) {
 
 module.exports = {
   GID_RE, json, allowCors, readBody, validateCurve, validateExtra, clean,
-  configured, sb, latest, index, insertEdit, history, curveColumns,
+  configured, sb, latest, index, insertEdit, history, curveColumns, normaliseCurve,
 };
