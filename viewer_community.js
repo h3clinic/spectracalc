@@ -91,7 +91,7 @@
       'border:1px solid var(--pcc-border,#ccc);background:transparent;color:inherit;';
     seeOrig.onclick = function () {
       var d = SPECTRA[gid];
-      if (d && d._published) { d.em = d._published.em; d.ab = d._published.ab; }
+      if (d && d._published) { d.em = d._published.em; d.ab = d._published.ab; d.em2 = d._published.em2; }
       loaded[gid] = 'published';
       b.style.display = 'none';
       window.showCompound(gid);
@@ -122,9 +122,13 @@
   function applyEdit(gid, doc) {
     var d = SPECTRA[gid];
     if (!d) return;
-    if (!d._published) d._published = { em: d.em, ab: d.ab };
+    // em2 was left out of every one of these, so a contributor could retrace the
+  // second emission curve, see it in the editor, and watch the viewer go on
+  // showing the published one — the page 'not updating'
+  if (!d._published) d._published = { em: d.em, ab: d.ab, em2: d.em2 };
     d.em = doc.em || null;
     d.ab = doc.ab || null;
+    d.em2 = doc.em2 || null;
     if (doc.em && doc.em.inten && doc.em.inten.length) {
       var pe = doc.em.wl[doc.em.inten.indexOf(Math.max.apply(null, doc.em.inten))];
       if (pe != null) d.lam_em = String(Math.round(pe));
@@ -211,9 +215,11 @@
         if (d._published && index[gid]) {
           plot(d._published.em, 'rgba(120,120,120,.55)', r * 1.35);
           plot(d._published.ab, 'rgba(120,120,120,.55)', r * 1.35);
+          plot(d._published.em2, 'rgba(120,120,120,.55)', r * 1.35);
         }
         plot(d.em, 'rgb(235,60,60)', r);
         plot(d.ab, 'rgb(40,160,40)', r);
+        plot(d.em2, 'rgb(224,138,46)', r);
         cv.title = (index[gid] ? 'Community edit (grey = the published trace underneath)'
                                 : 'Published digitization') + ' replotted on the raw scan';
         var cap = document.getElementById('overlayCap');
@@ -240,7 +246,7 @@
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (doc) {
           inflight[id] = false;
-          if (doc && (doc.em || doc.ab)) {
+          if (doc && (doc.em || doc.ab || doc.em2)) {
             applyEdit(id, doc);
             if (window._curId === id) { wrapped(id); }
           }
