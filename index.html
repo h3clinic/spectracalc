@@ -632,8 +632,7 @@ function showCompound(id) {
   const ovlS = document.getElementById('overlaySection');
   const ovlImg = document.getElementById('overlayImg');
   ovlS.style.display = 'block';
-  const ovlCandidates = ['overlays/' + d.graph + '.png',
-                         'http://localhost:8765/' + d.graph + '.png'];
+  const ovlCandidates = ['overlays/' + d.graph + '.png'];
   let ovlIdx = 0;
   ovlImg.onerror = function() {
     ovlIdx++;
