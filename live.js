@@ -370,8 +370,8 @@ $('file').onchange = e => {
   im.onload = () => {
     stop(); job = null; needle = null;
     page = analyse(im);
-    const nm = prompt('Wavelength in nm at the LEFT and RIGHT edges of the plot box, comma separated\n' +
-                      '(e.g. "250, 400")', '250, 400');
+    const nm = prompt('Wavelength in nm at the left and right edges of the plot box, '
+                    + 'comma separated', '250, 400');
     const parts = (nm || '').split(',').map(v => parseFloat(v.trim()));
     axis = (parts.length === 2 && parts.every(isFinite))
          ? { left: parts[0], right: parts[1] } : { left: 0, right: 100 };

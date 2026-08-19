@@ -27,15 +27,15 @@ const $ = id => document.getElementById(id);
 const STAGES = [
   ['Read the plate', 'the 600 dpi page and its plot frame'],
   ['Separate ink from paper', 'Otsu over the luminance histogram'],
-  ['Find the ruled lines', 'the box and the grid, so they are never mistaken for a curve'],
+  ['Find the ruled lines', 'the box and grid rules'],
   ['Read the axes', 'the frozen wavenumber calibration'],
-  ['Cut each column into runs', 'vertical strokes of ink, column by column'],
+  ['Cut each column into runs', 'vertical strokes of ink'],
   ['Seat the dots on the ink', 'pass one: nearest stroke in the dot’s own column'],
-  ['Walk in from the anchors', 'pass two: settled neighbours steer the unsettled'],
-  ['Bridge what is stranded', 'pass three: the chord across a gap with no usable ink'],
-  ['Follow cut traces onward', 'where a curve stops but the stroke keeps going'],
-  ['Scale to unit peak', 'the normalised scale Berlman prints'],
-  ['Check against the release', 'does this reproduce the published spectrum?'],
+  ['Walk in from the anchors', 'pass two: propagate from settled dots'],
+  ['Bridge what is stranded', 'pass three: chord across a gap'],
+  ['Follow cut traces onward', 'where a trace stops but ink continues'],
+  ['Scale to unit peak', 'peak to 1.00'],
+  ['Check against the release', 'compare with the published spectrum'],
 ];
 
 /* ── small helpers ─────────────────────────────────────────────────────── */
@@ -137,9 +137,8 @@ function* pipeline() {
 
   /* 1 — the plate */
   setStage(0);
-  setNote(`<b>${meta.name}</b> at 600 dpi, ${imgW}×${imgH} as served. The plot frame was
-    located once and frozen: everything downstream is measured against this box, so the
-    same page always yields the same numbers.`);
+  setNote(`<b>${meta.name}</b>, ${imgW}×${imgH}. The plot frame was located once and
+    frozen; every measurement below is taken against this box.`);
   setKV([['page', meta.graph], ['scan', `${imgW} × ${imgH}`],
          ['frame left/right', `${(frame.x_left / pageScale) | 0} / ${(frame.x_right / pageScale) | 0}`],
          ['frame top/bottom', `${(frame.y_top / pageScale) | 0} / ${(frame.y_bottom / pageScale) | 0}`],
@@ -148,10 +147,9 @@ function* pipeline() {
 
   /* 2 — Otsu */
   setStage(1);
-  setNote(`Ink or paper? The exposure varies from page to page, so the cutoff is not
-    hard-coded — <code>Otsu</code> sweeps every threshold and keeps the one that best
-    separates the two populations. The curve below the histogram is between-class
-    variance; the peak is the answer.`);
+  setNote(`<code>Otsu</code> sweeps every threshold and keeps the one that best separates
+    ink from paper, so exposure can vary between pages. The blue curve is between-class
+    variance; the threshold is its maximum.`);
   const { lum, h } = luminance();
   const thr = yield* otsuSteps(h);
   const mask = new Uint8Array(imgW * imgH);
@@ -167,10 +165,9 @@ function* pipeline() {
 
   /* 3 — ruled rows */
   setStage(2);
-  setNote(`The box border and the grid run the full width of the plot; a spectrum does
-    not. Any row more than <code>${RULE_COVERAGE * 100}%</code> ink across the plot
-    interior is marked as a rule. Without this an apex published at 1.0 snaps onto the
-    top border and stays above the printed peak — which is exactly what used to happen.`);
+  setNote(`The border and grid run the full width of the plot; a spectrum does not. Rows
+    more than <code>${RULE_COVERAGE * 100}%</code> ink across the interior are marked as
+    rules and excluded as snap targets.`);
   const fx0 = Math.max(0, Math.round((frame.x_left + 30) / pageScale));
   const fx1 = Math.min(imgW - 1, Math.round((frame.x_right - 30) / pageScale));
   const span = Math.max(1, fx1 - fx0);
@@ -190,10 +187,9 @@ function* pipeline() {
   setStage(3);
   const lo = 1e7 / (xcal.a * (frame.x_right) + xcal.b);
   const hi = 1e7 / (xcal.a * (frame.x_left) + xcal.b);
-  setNote(`Berlman prints wavenumber, so position maps linearly to cm⁻¹ and only then to
-    nm. The fit was made once from the printed ticks and frozen with it:
-    <code>ν̃ = ${xcal.a.toFixed(4)}·x + ${xcal.b.toFixed(1)}</code>, residual
-    ${xcal.rmse} cm⁻¹, read off the <b>${xcal.source}</b> axis.`);
+  setNote(`Position maps linearly to wavenumber, then to nm. Fitted once from the printed
+    ticks: <code>ν̃ = ${xcal.a.toFixed(4)}·x + ${xcal.b.toFixed(1)}</code>, residual
+    ${xcal.rmse} cm⁻¹, from the <b>${xcal.source}</b> axis.`);
   setKV([['slope a', xcal.a.toFixed(4)], ['intercept b', xcal.b.toFixed(1)],
          ['rmse', `${xcal.rmse} cm⁻¹`], ['axis used', xcal.source],
          ['covers', `${Math.min(lo, hi).toFixed(0)}–${Math.max(lo, hi).toFixed(0)} nm`]]);
@@ -201,9 +197,9 @@ function* pipeline() {
 
   /* 5 — column runs */
   setStage(4);
-  setNote(`Each column of the scan is cut into vertical runs of ink. A stroke crossed
-    square-on is a few pixels tall; a steep flank can be seventy. That distinction
-    matters later — aiming at the centre of a tall run lands nowhere near the curve.`);
+  setNote(`Each column is cut into vertical runs of ink. A stroke crossed square-on is a
+    few pixels tall; a steep flank can be seventy. Runs taller than
+    <code>${STROKE_MAX}</code> px are aimed at by their near edge, not their centre.`);
   let runsSeen = 0, tallest = 0;
   for (let x = fx0; x <= fx1; x += 3) {
     const rr = columnRuns(x).filter(([a, b]) => !isRule(a, b));
@@ -226,10 +222,9 @@ function* pipeline() {
   const tolScan = TOL_PAGE_PX / pageScale;
 
   setStage(5);
-  setNote(`Rebuilding the dots from the published numbers puts them where the values say,
-    not where the ink is — a curve normalised to 1.0 lands on the 1.00 rule. Pass one
-    looks in each dot’s <b>own column</b> for the nearest non-ruled stroke, within
-    <code>${TOL_PAGE_PX}</code> page px (<code>${tolScan.toFixed(1)}</code> scan px).`);
+  setNote(`Dots rebuilt from the published values land where the numbers say, not where
+    the ink is. Pass one searches each dot's own column for the nearest non-ruled stroke,
+    within <code>${TOL_PAGE_PX}</code> page px (<code>${tolScan.toFixed(1)}</code> scan px).`);
   for (const c of curves) {
     const n = c.px.length;
     c.xs = new Int32Array(n); c.ys = new Float64Array(n);
@@ -255,11 +250,9 @@ function* pipeline() {
 
   /* pass two */
   setStage(6);
-  setNote(`A dot far from the ink cannot be trusted to find its own way — widening its
-    search only casts a bigger net around a position already known to be wrong. Instead
-    each unsettled dot takes its reference from a <b>settled neighbour</b> and steps in
-    one column at a time, within <code>${NEIGHBOUR_RADIUS}</code> scan px. This is what
-    recovers an apex: it is far from the stroke but close to the dot beside it.`);
+  setNote(`Each unsettled dot takes its reference from a settled neighbour and steps in one
+    column at a time, within <code>${NEIGHBOUR_RADIUS}</code> scan px. Widening a dot's own
+    search instead would only search further around a position already wrong.`);
   for (const c of curves) {
     const n = c.px.length;
     for (let s = 0; s < SWEEPS; s++) {
@@ -307,10 +300,9 @@ function* pipeline() {
     }
   }
   marks = [];
-  setNote(`Where a peak reaches 1.0 the stroke merges into the top border, and excluding
-    the border leaves that column with nothing to snap to. If both sides are settled and
-    within <code>${BRIDGE_MAX_COLS}</code> columns, the dot goes on the chord between
-    them. It fires rarely and only when a dot has drifted further than the search band —
+  setNote(`Where a peak reaches 1.0 the stroke merges into the border, leaving that column
+    with nothing to snap to. If both sides are settled and within
+    <code>${BRIDGE_MAX_COLS}</code> columns, the dot goes on the chord between them.
     <b>${bridged}</b> dot${bridged === 1 ? '' : 's'} on this page.`);
   setKV(curves.map(c => [c.name,
     `${count(c.fixed)} / ${c.px.length} placed`]).concat([['bridged', bridged]]));
@@ -318,11 +310,10 @@ function* pipeline() {
 
   /* 9 — does the stroke keep going? */
   setStage(8);
-  setNote(`A fit can be perfect and the spectrum still wrong: every point placed sits on
-    the ink, and the trace stops halfway up a peak. So each end is walked outward along
-    its own slope to ask whether there is <b>still ink there</b>. On rhodamine 8B this is
-    the question that found an absorption curve ending at 0.4165 — its own maximum —
-    while the plate went on to a peak at 554 nm.`);
+  setNote(`Every placed point can sit on the ink while the trace still stops halfway up a
+    peak. Each end is walked outward along its own slope to test whether ink continues.
+    On rhodamine 8B this found an absorption curve ending at 0.4165, its own maximum,
+    with the printed peak at 554 nm.`);
   const probes = [];
   for (const c of curves) {
     for (const atStart of [true, false]) {
@@ -336,10 +327,9 @@ function* pipeline() {
   marks = [];
   setKV(probes);
   const cut = probes.filter(p => parseFloat(p[1]) >= 55).length;
-  setNote(`Each end walked outward along its own slope, looking for ink that the trace
-    never claimed. <b>${cut === 0 ? 'Every end here runs out where the stroke does'
-      : cut + ' end(s) still have ink beyond them'}</b> — a trace that stops while the
-    stroke continues is a curve missing part of itself, not a curve fitted badly.`);
+  setNote(`<b>${cut === 0 ? 'Every end runs out where the stroke does'
+      : cut + ' end(s) have ink beyond them'}</b>. A trace that stops while the stroke
+    continues is missing part of the curve.`);
   for (let i = 0; i < 25; i++) yield;
 
   /* 10 — unit peak */
@@ -356,10 +346,9 @@ function* pipeline() {
       for (let i = 0; i < 8; i++) yield;
     } else scaled.push([c.name, 'already 1.0000']);
   }
-  setNote(`Berlman prints normalised spectra, so unit peak is the intended scale. It is
-    applied once, at the end, after the geometry is settled — and the factor is recorded
-    as <code>peak_scaled_from</code>, so the fit to the ink stays recoverable. Applied
-    inside the redraw instead, as it once was, it re-ran on every load and compounded.`);
+  setNote(`Unit peak is the printed scale. Applied once, after the geometry is settled,
+    with the factor recorded as <code>peak_scaled_from</code> so the fit to the ink stays
+    recoverable.`);
   setKV(scaled);
   for (let i = 0; i < 25; i++) yield;
 
@@ -383,14 +372,11 @@ function* pipeline() {
   v.className = 'verdict' + (good ? '' : ' bad');
   v.style.display = 'block';
   v.innerHTML = good
-    ? `<b>Reproduced.</b> Running the stages above on this plate returns the published
-       spectrum to within ${worst.toFixed(4)} of full scale at every point. The animation
-       is the pipeline, not a picture of it.`
-    : `<b>Diverged</b> by up to ${worst.toFixed(4)} of full scale. Worth investigating —
-       either this page needs a stage the animation skips, or the release is stale.`;
-  setNote(`The last stage is the one that makes the rest worth watching: the result is
-    compared point by point against the released dataset for this page. Agreement means
-    what you just watched really is how the numbers were made.`);
+    ? `<b>Reproduced.</b> Matches the published spectrum to within
+       ${worst.toFixed(4)} of full scale at every point.`
+    : `<b>Diverged</b> by up to ${worst.toFixed(4)} of full scale on this page.`;
+  setNote(`The result is compared point by point against the released dataset for this
+    page.`);
   setStage(11);
 }
 
@@ -819,12 +805,11 @@ $('upFile').onchange = e => {
     up = analyseUpload(im);
     $('crop').style.display = 'block';
     $('upMsg').innerHTML = up.found
-      ? 'Plot box found from the printed axes — check the edges before digitizing.'
-      : '<b>Axes not found.</b> The box below is a guess; drag its edges onto the plot.';
+      ? 'Plot box found from the printed axes. Check the edges.'
+      : '<b>Axes not found.</b> Drag the edges onto the plot.';
     setStage(-1);
-    setNote(`<b>${f.name}</b> — ${im.width}×${im.height}. An uploaded page arrives without
-      the two things the dataset pages carry: a located plot box and a fitted axis. Set
-      both here, and everything after is the same code.`);
+    setNote(`<b>${f.name}</b>, ${im.width}×${im.height}. Set the plot box and the axis
+      range; the rest runs as it does for a dataset page.`);
     setKV([['image', `${im.width} × ${im.height}`],
            ['threshold', up.thr], ['axes detected', up.found ? 'yes' : 'no']]);
     drawUpload();
@@ -838,7 +823,7 @@ $('goTrace').onclick = () => {
   const unit = $('axUnit').value;
   const l = parseFloat($('axLeft').value), r = parseFloat($('axRight').value);
   if (!isFinite(l) || !isFinite(r) || l === r) {
-    $('upMsg').innerHTML = '<b>Give the axis two numbers</b> — what it reads at the left and right edges of the box.';
+    $('upMsg').innerHTML = '<b>Axis needs two numbers</b>: the values at the left and right edges of the box.';
     return;
   }
   $('upMsg').textContent = 'tracing…';
@@ -846,7 +831,7 @@ $('goTrace').onclick = () => {
     up.traces = autoTrace(up);
     drawUpload();
     if (!up.traces.length) {
-      $('upMsg').innerHTML = '<b>No curve found inside the box.</b> Check the crop, or the scan may be too faint.';
+      $('upMsg').innerHTML = '<b>No curve found inside the box.</b> Check the crop, or the scan is too faint.';
       return;
     }
     // pixels -> physical, using the two numbers given for the axis
