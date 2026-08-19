@@ -538,7 +538,14 @@ function tick() {
   $('bar').firstElementChild.style.width = pct + '%';
   $('pct').textContent = pct + '%';
   draw();
-  if (running) requestAnimationFrame(tick);
+  // Browsers suspend requestAnimationFrame while the tab or panel is not
+  // visible, which left the run sitting at 0% in a sidebar that had not been
+  // brought forward yet.  Fall back to a timer when hidden so pressing Run
+  // always starts it, and pick the smooth path back up once it is on screen.
+  if (running) {
+    if (document.visibilityState === 'visible') requestAnimationFrame(tick);
+    else setTimeout(tick, 16);
+  }
 }
 
 function reset() {
@@ -602,3 +609,278 @@ addEventListener('resize', draw);
     `<option value="${e.gid}"${e.gid === want ? ' selected' : ''}>${e.gid.replace('graph-', 'B')} — ${e.name}</option>`).join('');
   await load(want);
 })();
+
+/* ══ Digitizing a page you upload ═══════════════════════════════════════
+ * The plates in the dataset arrive with their plot box already located and
+ * their axis already fitted from the printed ticks.  An uploaded page has
+ * neither, so those two facts have to be established before any of the
+ * machinery above can run: find the box, and be told what the axis reads at
+ * its edges.  Everything after that is the same code.
+ */
+let up = null;                       // {img, mask, rule, box, drag}
+
+function analyseUpload(image) {
+  const c = document.createElement('canvas');
+  c.width = image.width; c.height = image.height;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(image, 0, 0);
+  const d = x.getImageData(0, 0, c.width, c.height).data;
+  const W = c.width, H = c.height;
+  const lum = new Uint8Array(W * H), h = new Float64Array(256);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const v = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000 | 0;
+    lum[p] = v; h[v]++;
+  }
+  let sum = 0; for (let t = 0; t < 256; t++) sum += t * h[t];
+  let sumB = 0, wB = 0, best = 0, thr = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += h[t]; if (!wB) continue;
+    const wF = W * H - wB; if (!wF) break;
+    sumB += t * h[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > best) { best = v; thr = t; }
+  }
+  const mask = new Uint8Array(W * H);
+  for (let p = 0; p < mask.length; p++) mask[p] = lum[p] <= thr ? 1 : 0;
+
+  /* the plot box is the longest ruled row above and below, and the longest
+     ruled column left and right — the axes are the only strokes that run the
+     whole way */
+  const rowCov = new Float64Array(H), colCov = new Float64Array(W);
+  for (let y = 0; y < H; y++) { let n = 0;
+    for (let xx = 0; xx < W; xx += 2) if (mask[y * W + xx]) n++;
+    rowCov[y] = n / (W / 2); }
+  for (let xx = 0; xx < W; xx++) { let n = 0;
+    for (let y = 0; y < H; y += 2) if (mask[y * W + xx]) n++;
+    colCov[xx] = n / (H / 2); }
+  const pick = (cov, from, to, dir) => {
+    let bi = -1, bv = 0;
+    for (let i = from; dir > 0 ? i < to : i > to; i += dir)
+      if (cov[i] > bv) { bv = cov[i]; bi = i; }
+    return bv > 0.45 ? bi : -1;
+  };
+  const top = pick(rowCov, 0, H * 0.55 | 0, 1);
+  const bot = pick(rowCov, H - 1, H * 0.45 | 0, -1);
+  const left = pick(colCov, 0, W * 0.55 | 0, 1);
+  const right = pick(colCov, W - 1, W * 0.45 | 0, -1);
+  const box = {
+    left: left >= 0 ? left : Math.round(W * 0.12),
+    right: right >= 0 ? right : Math.round(W * 0.92),
+    top: top >= 0 ? top : Math.round(H * 0.08),
+    bottom: bot >= 0 ? bot : Math.round(H * 0.88),
+  };
+  const rule = new Uint8Array(H);
+  for (let y = 0; y < H; y++) {
+    let n = 0, span = 0;
+    for (let xx = box.left + 20; xx <= box.right - 20; xx += 2) { span++; if (mask[y * W + xx]) n++; }
+    if (span && n / span > RULE_COVERAGE) rule[y] = 1;
+  }
+  return { img: image, W, H, mask, rule, thr, box, found: top >= 0 && bot >= 0 && left >= 0 && right >= 0 };
+}
+
+/* trace a stroke from a seed, both ways, with the slope carrying it across
+   crossings — the same rule the extension pass uses */
+function traceStroke(u, sx, sy) {
+  const runsAt = x => {
+    const out = []; let s = -1;
+    for (let y = 0; y < u.H; y++) {
+      if (u.mask[y * u.W + x]) { if (s < 0) s = y; }
+      else if (s >= 0) { out.push([s, y - 1]); s = -1; }
+    }
+    if (s >= 0) out.push([s, u.H - 1]);
+    return out.filter(([a, b]) => { for (let y = a; y <= b; y++) if (!u.rule[y]) return b - a <= 60; return false; });
+  };
+  const pts = [[sx, sy]];
+  for (const dir of [-1, 1]) {
+    let y = sy, slope = 0, gap = 0;
+    for (let x = sx + dir; x >= u.box.left && x <= u.box.right; x += dir) {
+      const pred = y + slope;
+      let best = null, bd = 15;
+      for (const [a, b] of runsAt(x)) {
+        const t = (pred >= a && pred <= b) ? pred : (pred < a ? a : b);
+        const g = (pred >= a && pred <= b) ? 0 : Math.min(Math.abs(pred - a), Math.abs(pred - b));
+        if (g < bd) { bd = g; best = t; }
+      }
+      if (best === null) { if (++gap > 14) break; y = pred; continue; }
+      gap = 0; slope = 0.62 * slope + 0.38 * (best - y); y = best;
+      pts.push([x, y]);
+    }
+  }
+  pts.sort((a, b) => a[0] - b[0]);
+  return pts;
+}
+
+function autoTrace(u) {
+  const used = [];
+  const near = (x, y) => used.some(p => p.some(([qx, qy]) => Math.abs(qx - x) < 2 && Math.abs(qy - y) < 9));
+  const mid = Math.round((u.box.left + u.box.right) / 2);
+  const seeds = [];
+  for (let k = -6; k <= 6; k++) {
+    const x = Math.round(mid + k * (u.box.right - u.box.left) / 16);
+    if (x <= u.box.left || x >= u.box.right) continue;
+    let s = -1;
+    for (let y = u.box.top; y <= u.box.bottom; y++) {
+      const on = u.mask[y * u.W + x] && !u.rule[y];
+      if (on) { if (s < 0) s = y; }
+      else if (s >= 0) { if (y - s <= 60) seeds.push([x, (s + y - 1) / 2]); s = -1; }
+    }
+  }
+  const traces = [];
+  for (const [x, y] of seeds) {
+    if (near(x, y)) continue;
+    const t = traceStroke(u, x, y);
+    if (t.length < (u.box.right - u.box.left) * 0.12) continue;
+    used.push(t); traces.push(t);
+    if (traces.length >= 3) break;
+  }
+  return traces.sort((a, b) => b.length - a.length).slice(0, 3);
+}
+
+/* ── upload: wiring, the crop box, and the hand-off to the tracer ──────── */
+function drawUpload() {
+  cv.width = cv.clientWidth * devicePixelRatio;
+  cv.height = cv.clientHeight * devicePixelRatio;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = '#0e1014'; g.fillRect(0, 0, cv.width, cv.height);
+  const s = Math.min(cv.width / up.W, cv.height / up.H);
+  const ox = (cv.width - up.W * s) / 2, oy = (cv.height - up.H * s) / 2;
+  up.s = s; up.ox = ox; up.oy = oy;
+  g.drawImage(up.img, ox, oy, up.W * s, up.H * s);
+  const b = up.box, X = x => ox + x * s, Y = y => oy + y * s;
+  g.fillStyle = 'rgba(10,12,16,.55)';
+  g.fillRect(ox, oy, up.W * s, Y(b.top) - oy);
+  g.fillRect(ox, Y(b.bottom), up.W * s, oy + up.H * s - Y(b.bottom));
+  g.fillRect(ox, Y(b.top), X(b.left) - ox, Y(b.bottom) - Y(b.top));
+  g.fillRect(X(b.right), Y(b.top), ox + up.W * s - X(b.right), Y(b.bottom) - Y(b.top));
+  g.strokeStyle = '#6aa7ff'; g.lineWidth = 2;
+  g.strokeRect(X(b.left), Y(b.top), X(b.right) - X(b.left), Y(b.bottom) - Y(b.top));
+  g.fillStyle = '#6aa7ff';
+  for (const [px, py] of [[X(b.left), (Y(b.top) + Y(b.bottom)) / 2],
+                          [X(b.right), (Y(b.top) + Y(b.bottom)) / 2],
+                          [(X(b.left) + X(b.right)) / 2, Y(b.top)],
+                          [(X(b.left) + X(b.right)) / 2, Y(b.bottom)]]) {
+    g.beginPath(); g.arc(px, py, 5, 0, 6.283); g.fill();
+  }
+  if (up.traces) {
+    const cols = ['#d94f45', '#3fa96a', '#e08a2e'];
+    up.traces.forEach((t, i) => {
+      g.strokeStyle = cols[i % 3]; g.lineWidth = 2.2; g.beginPath();
+      t.forEach(([x, y], k) => k ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y)));
+      g.stroke();
+    });
+  }
+  $('cL').textContent = `${up.box.left} / ${up.box.right}`;
+  $('cT').textContent = `${up.box.top} / ${up.box.bottom}`;
+}
+
+function hitEdge(mx, my) {
+  const b = up.box, X = x => up.ox + x * up.s, Y = y => up.oy + y * up.s, T = 10;
+  if (Math.abs(mx - X(b.left)) < T) return 'left';
+  if (Math.abs(mx - X(b.right)) < T) return 'right';
+  if (Math.abs(my - Y(b.top)) < T) return 'top';
+  if (Math.abs(my - Y(b.bottom)) < T) return 'bottom';
+  return null;
+}
+
+cv.addEventListener('mousedown', e => {
+  if (!up) return;
+  const r = cv.getBoundingClientRect();
+  up.drag = hitEdge((e.clientX - r.left) * devicePixelRatio, (e.clientY - r.top) * devicePixelRatio);
+});
+addEventListener('mouseup', () => { if (up) up.drag = null; });
+cv.addEventListener('mousemove', e => {
+  if (!up) return;
+  const r = cv.getBoundingClientRect();
+  const mx = (e.clientX - r.left) * devicePixelRatio, my = (e.clientY - r.top) * devicePixelRatio;
+  cv.style.cursor = up.drag || hitEdge(mx, my)
+    ? (/left|right/.test(up.drag || hitEdge(mx, my)) ? 'ew-resize' : 'ns-resize') : 'default';
+  if (!up.drag) return;
+  const x = clamp(Math.round((mx - up.ox) / up.s), 0, up.W - 1);
+  const y = clamp(Math.round((my - up.oy) / up.s), 0, up.H - 1);
+  if (up.drag === 'left') up.box.left = Math.min(x, up.box.right - 20);
+  if (up.drag === 'right') up.box.right = Math.max(x, up.box.left + 20);
+  if (up.drag === 'top') up.box.top = Math.min(y, up.box.bottom - 20);
+  if (up.drag === 'bottom') up.box.bottom = Math.max(y, up.box.top + 20);
+  up.traces = null;
+  drawUpload();
+});
+
+$('upBtn').onclick = () => $('upFile').click();
+$('cancelUp').onclick = () => { up = null; $('crop').style.display = 'none';
+                                cv.style.cursor = 'default'; load($('page').value); };
+
+$('upFile').onchange = e => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const im = new Image();
+  im.onload = () => {
+    running = false; gen = null;
+    up = analyseUpload(im);
+    $('crop').style.display = 'block';
+    $('upMsg').innerHTML = up.found
+      ? 'Plot box found from the printed axes — check the edges before digitizing.'
+      : '<b>Axes not found.</b> The box below is a guess; drag its edges onto the plot.';
+    setStage(-1);
+    setNote(`<b>${f.name}</b> — ${im.width}×${im.height}. An uploaded page arrives without
+      the two things the dataset pages carry: a located plot box and a fitted axis. Set
+      both here, and everything after is the same code.`);
+    setKV([['image', `${im.width} × ${im.height}`],
+           ['threshold', up.thr], ['axes detected', up.found ? 'yes' : 'no']]);
+    drawUpload();
+    URL.revokeObjectURL(im.src);
+  };
+  im.onerror = () => { $('upMsg').textContent = 'That file could not be read as an image.'; };
+  im.src = URL.createObjectURL(f);
+};
+
+$('goTrace').onclick = () => {
+  const unit = $('axUnit').value;
+  const l = parseFloat($('axLeft').value), r = parseFloat($('axRight').value);
+  if (!isFinite(l) || !isFinite(r) || l === r) {
+    $('upMsg').innerHTML = '<b>Give the axis two numbers</b> — what it reads at the left and right edges of the box.';
+    return;
+  }
+  $('upMsg').textContent = 'tracing…';
+  setTimeout(() => {
+    up.traces = autoTrace(up);
+    drawUpload();
+    if (!up.traces.length) {
+      $('upMsg').innerHTML = '<b>No curve found inside the box.</b> Check the crop, or the scan may be too faint.';
+      return;
+    }
+    // pixels -> physical, using the two numbers given for the axis
+    const b = up.box, H = b.bottom - b.top;
+    const toNm = v => unit === 'nm' ? v : 1e7 / v;
+    const out = up.traces.map((t, i) => {
+      const wl = [], it = [];
+      for (const [x, y] of t) {
+        const f = (x - b.left) / (b.right - b.left);
+        wl.push(toNm(l + f * (r - l)));
+        it.push((b.bottom - y) / H);
+      }
+      const o = wl.map((_, k) => k).sort((p, q) => wl[p] - wl[q]);
+      return { name: ['curve 1', 'curve 2', 'curve 3'][i],
+               wl: o.map(k => +wl[k].toFixed(1)), inten: o.map(k => +it[k].toFixed(6)) };
+    });
+    for (const c of out) {                       // unit peak, as everywhere else
+      const mx = Math.max(...c.inten);
+      if (mx > 0.05) c.inten = c.inten.map(v => +(v / mx).toFixed(6));
+    }
+    up.out = out;
+    setKV(out.map(c => [c.name,
+      `${c.wl[0].toFixed(0)}–${c.wl[c.wl.length - 1].toFixed(0)} nm · ${c.wl.length} pts`]));
+    $('upMsg').innerHTML = `Traced <b>${out.length}</b> curve${out.length === 1 ? '' : 's'}. ` +
+      `<a href="#" id="dlUp" style="color:#6aa7ff">Download CSV</a>`;
+    $('dlUp').onclick = ev => {
+      ev.preventDefault();
+      const rows = [['wavelength_nm', ...out.map(c => c.name.replace(' ', '_') + '_intensity')]];
+      const n = Math.max(...out.map(c => c.wl.length));
+      for (let i = 0; i < n; i++)
+        rows.push([out[0].wl[i] ?? '', ...out.map(c => c.inten[i] ?? '')]);
+      const blob = new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = 'digitized.csv'; a.click();
+    };
+  }, 30);
+};
