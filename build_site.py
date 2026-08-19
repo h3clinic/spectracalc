@@ -275,7 +275,8 @@ def main():
         print(f"  {page}: {n} overlay refs -> .webp "
               f"({os.path.getsize(os.path.join(SITE, page)) / 1e6:.1f} MB)")
 
-    for extra in ("vercel.json", "editor.html", "editor.js", "viewer_community.js"):
+    for extra in ("vercel.json", "editor.html", "editor.js", "viewer_community.js",
+                  "pipeline.html", "pipeline.js"):
         p = os.path.join(ROOT, extra)
         if os.path.exists(p):
             shutil.copy(p, os.path.join(SITE, extra))

@@ -71,6 +71,7 @@ async function boot() {
   gid = (q && ORDER.includes(q)) ? q : ORDER[0];
   sel.value = gid;
   document.getElementById('backLink').href = '/?gid=' + gid;
+  document.getElementById('howLink').href = '/pipeline.html?gid=' + gid;
   await loadPage();
 }
 
