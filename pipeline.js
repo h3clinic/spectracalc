@@ -446,7 +446,7 @@ function buildMaskLayer() {
 
 function draw() {
   cv.width = cv.clientWidth * devicePixelRatio;
-  cv.height = (cv.clientHeight - 44) * devicePixelRatio;
+  cv.height = cv.clientHeight * devicePixelRatio;
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.fillStyle = '#0e1014'; g.fillRect(0, 0, cv.width, cv.height);
   if (!img) return;
@@ -502,7 +502,7 @@ function draw() {
 }
 
 function drawHistogram() {
-  const w = Math.min(430, cv.width * .42), h = 132, x0 = 18, y0 = cv.height - h - 18;
+  const w = Math.min(470, cv.width * .44), h = 150, x0 = 18, y0 = cv.height - h - 16;
   g.fillStyle = 'rgba(14,16,20,.88)'; g.strokeStyle = '#2a2f38';
   g.beginPath(); g.roundRect(x0, y0, w, h, 8); g.fill(); g.stroke();
   let hmax = 0; for (let i = 0; i < 256; i++) hmax = Math.max(hmax, hist.h[i]);
