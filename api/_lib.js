@@ -1,4 +1,8 @@
-/* Shared helpers for the community-edit API, backed by Supabase (Postgres).
+/* Shared helpers for the community-edit API.
+ *
+ * Two interchangeable backends behind one interface: Supabase (Postgres) when
+ * SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY are set, otherwise Vercel Blob.
+ * The routes never learn which one is answering.
  *
  * One append-only table, public.spectra_edits, plus a view, public.spectra_latest,
  * that picks the newest row per spectrum.  The view *derives* the index rather
@@ -19,9 +23,25 @@
 const SB_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SB_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || '';
 
+/* Object storage is the fallback backend, used when no Postgres is wired up.
+ *
+ * The earlier object-storage attempt kept mutable keys: one global index file
+ * listing every edited page, and a `latest.json` per page, both rewritten on
+ * each save.  Blob URLs are CDN-cached, so a read could answer with the body a
+ * key held before the last write, and a page would look unedited seconds after
+ * someone saved it.
+ *
+ * Nothing here is ever rewritten.  A save is one new immutable key,
+ * `edits/<gid>/v/<version>.json`, and both the current version and the set of
+ * edited pages are *derived* by listing that prefix and taking the newest.  A
+ * URL's body can never be out of date, because it never changes. */
+const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN || '';
+const BLOB_API = 'https://blob.vercel-storage.com';
+
 const GID_RE = /^graph-\d{1,4}$/;
 const MAX_POINTS = 20000;
 const MAX_BODY = 6 * 1024 * 1024;
+const MAX_HOLES = 400;
 
 function json(res, status, body) {
   res.statusCode = status;
@@ -38,7 +58,10 @@ function allowCors(req, res) {
   return false;
 }
 
-function configured() { return !!(SB_URL && SB_KEY); }
+/* Postgres wins when it is wired up; object storage is the fallback. */
+const BACKEND = (SB_URL && SB_KEY) ? 'supabase' : (BLOB_TOKEN ? 'blob' : null);
+
+function configured() { return BACKEND !== null; }
 
 async function sb(path, opts) {
   opts = opts || {};
@@ -102,7 +125,30 @@ function validateCurve(c, label) {
     owl.push(Math.round(w * 10) / 10);
     oin.push(Math.round(v * 1e6) / 1e6);
   }
-  return { wl: owl, inten: oin };
+  /* `scaled_by` is the factor that took this curve to unit peak, and it is the
+   * only way back to the pixel row the dot was traced from.  Dropping it here
+   * meant the editor reloaded its own save with every dot lifted off the ink by
+   * exactly that factor: the record round-tripped as numbers but not as a
+   * picture.  It is data about the curve, so it travels with it. */
+  const s = Number(c.scaled_by);
+  const out = { wl: owl, inten: oin };
+  if (Number.isFinite(s) && s > 0 && s < 1e4) out.scaled_by = Math.round(s * 1e6) / 1e6;
+
+  /* Spans the contributor cleared on purpose.  Without them a reload cannot
+   * tell an erased stretch from a break in the printed ink, and fills the
+   * erased one back in: the edit saves 2017 points and loads 2057. */
+  if (Array.isArray(c.holes)) {
+    const holes = [];
+    for (const h of c.holes.slice(0, MAX_HOLES)) {
+      if (!Array.isArray(h) || h.length !== 2) continue;
+      const lo = Number(h[0]), hi = Number(h[1]);
+      if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi < lo) continue;
+      if (lo < 100 || hi > 1200) continue;
+      holes.push([Math.round(lo * 100) / 100, Math.round(hi * 100) / 100]);
+    }
+    if (holes.length) out.holes = holes;
+  }
+  return out;
 }
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
@@ -120,11 +166,14 @@ function validateExtra(list) {
     if (!curve) throw new Error(`extra[${i}]: empty curve`);
     const color = String(c.color || '');
     if (!HEX.test(color)) throw new Error(`extra[${i}]: colour must be #rrggbb`);
-    return {
+    const out = {
       name: clean(c.name, 40) || `curve ${i + 1}`,
       color: color.toLowerCase(),
       wl: curve.wl, inten: curve.inten,
     };
+    if (curve.scaled_by != null) out.scaled_by = curve.scaled_by;
+    if (curve.holes != null) out.holes = curve.holes;
+    return out;
   });
 }
 
@@ -133,11 +182,91 @@ const clean = (s, max) =>
 
 const COLS = 'gid,version,author,note,em,ab,em2,extra,reverted,points,created_at';
 
+/* ── object-storage backend ───────────────────────────────────────────── */
+
+/* Every key is written once and never rewritten.
+ *
+ * Blob URLs are CDN-cached, so a mutable "latest" pointer can answer a read
+ * with the body it held before the last write — the page that looks unedited
+ * seconds after someone saved it.  Nothing here is ever overwritten: a save is
+ * a new `edits/<gid>/v/<version>.json`, and the current version is *found*, by
+ * listing that prefix and taking the newest.  Immutable bodies make the cache
+ * harmless, because a URL's content can never be out of date.
+ */
+const blobAuth = () => ({ authorization: `Bearer ${BLOB_TOKEN}` });
+const versionKey = (gid, version) => `edits/${gid}/v/${version}.json`;
+const VERSION_PATH = /^edits\/(graph-\d{1,4})\/v\/(\d+)[^/]*\.json$/;
+
+/** Newest-first by the millisecond stamp every version string starts with. */
+function newestFirst(blobs) {
+  return blobs
+    .map(b => ({ b, m: VERSION_PATH.exec(b.pathname) }))
+    .filter(x => x.m)
+    .sort((p, q) => Number(q.m[2]) - Number(p.m[2]))
+    .map(x => ({ blob: x.b, gid: x.m[1], stamp: Number(x.m[2]) }));
+}
+
+async function blobPut(pathname, doc) {
+  const r = await fetch(`${BLOB_API}/${pathname}`, {
+    method: 'PUT',
+    headers: Object.assign(blobAuth(), {
+      'x-content-type': 'application/json',
+      'x-vercel-blob-access': 'private',   // nothing here is world-readable
+      'x-add-random-suffix': '0',          // the pathname IS the key
+      'x-allow-overwrite': '1',
+    }),
+    body: JSON.stringify(doc),
+  });
+  if (!r.ok) {
+    const e = new Error(`blob put ${pathname}: HTTP ${r.status}`);
+    e.status = r.status;
+    throw e;
+  }
+  return r.json();
+}
+
+async function blobList(prefix) {
+  const out = [];
+  let cursor = '';
+  for (let page = 0; page < 20; page++) {
+    const q = new URLSearchParams({ prefix, limit: '1000' });
+    if (cursor) q.set('cursor', cursor);
+    const r = await fetch(`${BLOB_API}?${q.toString()}`, { headers: blobAuth() });
+    if (!r.ok) {
+      const e = new Error(`blob list ${prefix}: HTTP ${r.status}`);
+      e.status = r.status;
+      throw e;
+    }
+    const j = await r.json();
+    for (const b of j.blobs || []) out.push(b);
+    if (!j.hasMore) return out;
+    cursor = j.cursor;
+  }
+  return out;
+}
+
+async function blobRead(url) {
+  const r = await fetch(url, { headers: blobAuth() });
+  if (r.status === 404 || r.status === 403) return null;
+  if (!r.ok) throw new Error(`blob read: HTTP ${r.status}`);
+  return r.json();
+}
+
+async function blobLatest(gid) {
+  const newest = newestFirst(await blobList(`edits/${gid}/v/`))[0];
+  return newest ? blobRead(newest.blob.url) : null;
+}
+
 /** The current version of one spectrum, or null when it has none / was reverted. */
 async function latest(gid) {
-  const rows = await sb(
-    `spectra_latest?gid=eq.${encodeURIComponent(gid)}&select=${COLS}&limit=1`);
-  const row = rows && rows[0];
+  let row;
+  if (BACKEND === 'supabase') {
+    const rows = await sb(
+      `spectra_latest?gid=eq.${encodeURIComponent(gid)}&select=${COLS}&limit=1`);
+    row = rows && rows[0];
+  } else {
+    row = await blobLatest(gid);
+  }
   if (!row || row.reverted) return null;
   if (!row.em && !row.ab && !row.em2 && !(row.extra && row.extra.length)) return null;
   return row;
@@ -145,13 +274,37 @@ async function latest(gid) {
 
 /** Every spectrum that currently carries an edit, as gid -> metadata. */
 async function index() {
-  const rows = await sb(
-    'spectra_latest?select=gid,version,author,note,reverted,points,created_at' +
-    '&reverted=is.false&order=gid.asc');
   const out = {};
-  for (const r of rows || []) {
+  if (BACKEND === 'supabase') {
+    const rows = await sb(
+      'spectra_latest?select=gid,version,author,note,reverted,points,created_at' +
+      '&reverted=is.false&order=gid.asc');
+    for (const r of rows || []) {
+      out[r.gid] = {
+        ts: Date.parse(r.created_at),
+        author: r.author || '',
+        note: r.note || '',
+        version: r.version,
+        points: r.points,
+        reverted: false,
+      };
+    }
+    return out;
+  }
+  // Derived, never stored.  A page is in this index because its record is in
+  // the bucket, so the two cannot disagree; the newest version of each page
+  // wins, and a page whose newest version is a revert drops out below.
+  const newestPerGid = new Map();
+  for (const v of newestFirst(await blobList('edits/'))) {
+    if (!newestPerGid.has(v.gid)) newestPerGid.set(v.gid, v.blob);
+  }
+  const rows = await Promise.all(
+    [...newestPerGid.values()].map(b => blobRead(b.url).catch(() => null)));
+  for (const r of rows) {
+    if (!r || r.reverted || !r.gid) continue;
+    if (!r.em && !r.ab && !r.em2 && !(r.extra && r.extra.length)) continue;
     out[r.gid] = {
-      ts: Date.parse(r.created_at),
+      ts: Date.parse(r.created_at) || r.ts || 0,
       author: r.author || '',
       note: r.note || '',
       version: r.version,
@@ -159,23 +312,37 @@ async function index() {
       reverted: false,
     };
   }
-  return out;
+  return Object.fromEntries(Object.keys(out).sort().map(k => [k, out[k]]));
 }
 
 async function insertEdit(doc) {
-  const rows = await sb('spectra_edits', {
-    method: 'POST',
-    headers: { prefer: 'return=representation' },
-    body: doc,
-  });
-  return rows && rows[0];
+  const row = Object.assign({ created_at: new Date().toISOString() }, doc);
+  if (BACKEND === 'supabase') {
+    const rows = await sb('spectra_edits', {
+      method: 'POST',
+      headers: { prefer: 'return=representation' },
+      body: doc,
+    });
+    return rows && rows[0];
+  }
+  await blobPut(versionKey(row.gid, row.version), row);
+  return row;
 }
 
 /** Every version ever saved for a spectrum, newest first. */
 async function history(gid) {
-  return sb(`spectra_edits?gid=eq.${encodeURIComponent(gid)}` +
-            '&select=version,author,note,reverted,points,created_at' +
-            '&order=created_at.desc');
+  if (BACKEND === 'supabase') {
+    return sb(`spectra_edits?gid=eq.${encodeURIComponent(gid)}` +
+              '&select=version,author,note,reverted,points,created_at' +
+              '&order=created_at.desc');
+  }
+  const versions = newestFirst(await blobList(`edits/${gid}/v/`));
+  const rows = (await Promise.all(versions.map(v => blobRead(v.blob.url).catch(() => null))))
+    .filter(Boolean);
+  return rows.map(r => ({
+    version: r.version, author: r.author, note: r.note,
+    reverted: !!r.reverted, points: r.points, created_at: r.created_at,
+  }));
 }
 
 /** Export columns for a stored record: the standard curves plus any the

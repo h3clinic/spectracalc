@@ -6,10 +6,10 @@
 <title>SpectraWolf Editor — Berlman Spectra</title>
 <style>
   :root {
-    --pcc-navy: #1E3B96; --pcc-gold: #EFC047;
-    --bg: #111318; --surface: #1a1d24; --surface2: #22262e;
-    --border: #333840; --text: #e4e6ea; --text2: #8b919a;
-    --accent: #4a8fe7; --emission: #C0392B; --absorption: #1E8F4E;
+    --pcc-navy: #000000; --pcc-gold: #ffffff;
+    --bg: #0d0d0d; --surface: #161616; --surface2: #1f1f1f;
+    --border: #333333; --text: #ededed; --text2: #9a9a9a;
+    --accent: #ffffff; --emission: #C0392B; --absorption: #1E8F4E;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -37,7 +37,7 @@
   }
   .btn:hover { background: var(--border); }
   .btn-go { background: var(--absorption); border-color: var(--absorption); color: #fff; }
-  .btn-alt { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-alt { background: var(--accent); border-color: var(--accent); color: #0d0d0d; }
 
   .main { display: flex; flex: 1; min-height: 0; }
 
@@ -61,7 +61,7 @@
   .tools.named .tool span { font-size: 14px; line-height: 1; }
   .tools.named .tool em { font-style: normal; font-size: 8.5px; letter-spacing: .2px; }
   .tool:hover { background: var(--border); }
-  .tool.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tool.on { background: var(--accent); border-color: var(--accent); color: #0d0d0d; }
   .sizes { display: flex; gap: 5px; }
   .size {
     width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 4px;
@@ -75,7 +75,7 @@
     border: 1px solid var(--border); border-radius: 5px; background: var(--surface2);
     color: var(--text2); font-size: 10.5px; padding: 4px 0; cursor: pointer;
   }
-  .sc.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .sc.on { background: var(--accent); border-color: var(--accent); color: #0d0d0d; }
   .swatches { display: grid; grid-template-columns: 26px 26px; gap: 5px; }
   .sw {
     width: 26px; height: 26px; border: 2px solid var(--border); border-radius: 4px;

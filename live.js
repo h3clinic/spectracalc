@@ -17,6 +17,9 @@ const P = $('plateCv'), pg = P.getContext('2d');
 const L = $('loupe'), lg = L.getContext('2d');
 const C = $('chart'), cg = C.getContext('2d');
 
+const PIPE = 'http://localhost:8770';   // the real digitizer, when it is up
+let pipeUp = null;                      // null = unknown, true/false once probed
+
 let page = null;            // {img,W,H,mask,rule,box,thr}
 let axis = null;            // {left,right} in nm
 let job = null;             // running trace
@@ -308,15 +311,77 @@ function drawChart() {
 
 function redraw() { drawPlate(); drawLoupe(); drawChart(); }
 
-/* ── loop, stats, wiring ───────────────────────────────────────────────── */
+/* ── the real pipeline ─────────────────────────────────────────────────────
+ * The tracer in this file is a single strategy and it shows: on a sharply
+ * peaked plate it follows the baseline, because the baseline is the longest
+ * continuous stroke on the page.  berlman.py runs four extraction strategies
+ * and keeps whichever scores best against the ink, plus fragment merging,
+ * overlap resolution and absorption recovery.  That is what produced the
+ * dataset, so when the service is reachable the curves come from it and this
+ * view animates them being laid down.  It takes 20-60 s per page; the fallback
+ * is only used when the service is not running.
+ */
 const set = (id, v) => { $(id).textContent = v; };
+
+async function probePipe() {
+  if (pipeUp !== null) return pipeUp;
+  try {
+    const r = await fetch(PIPE + '/api/master_status', { signal: AbortSignal.timeout(2500) });
+    pipeUp = r.ok;
+  } catch { pipeUp = false; }
+  $('hint').textContent = pipeUp ? 'berlman.py pipeline connected' : 'pipeline offline — built-in tracer';
+  return pipeUp;
+}
+
+/* turn a pipeline response into the same shape the animator draws */
+function adoptPipeline(res) {
+  // The response mixes two coordinate frames: px/py and frame_orig are in the
+  // original 600 dpi page, while width/height and frame are the downscaled
+  // working copy (res.scale relates them).  One factor for both puts the
+  // curves off the page entirely.
+  const k = page.W / (res.width / res.scale);   // original page px -> our scan px
+  const fr = res.frame_orig || {
+    x_left: res.frame.x_left / res.scale, x_right: res.frame.x_right / res.scale,
+    y_top: res.frame.y_top / res.scale, y_bottom: res.frame.y_bottom / res.scale };
+  page.box = { left: Math.round(fr.x_left * k), right: Math.round(fr.x_right * k),
+               top: Math.round(fr.y_top * k), bottom: Math.round(fr.y_bottom * k) };
+  if (res.xcal) {
+    const nm = x => 1e7 / (res.xcal.a * (x / k) + res.xcal.b);   // xcal is in original px
+    axis = { left: nm(page.box.left), right: nm(page.box.right) };
+  }
+  const curves = res.curves.map((c, i) => {
+    const pts = c.px.map((x, j) => [x * k, c.py[j] * k]).sort((a, b) => a[0] - b[0]);
+    return { pts, colour: COLS[i % 3], role: c.role };
+  });
+  return { p: page, curves: [], cur: null, pool: [], used: [], runsRead: 0,
+           done: false, queue: curves, fromPipeline: true, f1: res.f1, strategy: res.strategy };
+}
+
+/* replay one point of a pipeline curve — same three views, real numbers */
+function stepPipeline(job) {
+  if (!job.cur) {
+    if (!job.queue.length) { job.done = true; return { kind: 'done' }; }
+    const q = job.queue.shift();
+    job.cur = { pts: [], all: q.pts, i: 0, colour: q.colour, role: q.role };
+  }
+  const c = job.cur;
+  if (c.i >= c.all.length) {
+    job.curves.push({ pts: c.pts, colour: c.colour, role: c.role });
+    const n = c.pts.length; job.cur = null;
+    return { kind: 'curve', n };
+  }
+  const [x, y] = c.all[c.i++];
+  c.pts.push([x, y]);
+  job.runsRead++;
+  return { kind: 'point', x, y };
+}
 
 function tick() {
   if (!job || job.done) { stop(); return; }
   const n = Math.max(1, speed);
   let last = null;
   for (let i = 0; i < n && !job.done; i++) {
-    const r = stepJob(job);
+    const r = job.fromPipeline ? stepPipeline(job) : stepJob(job);
     if (r.kind === 'point' || r.kind === 'gap' || r.kind === 'seed') last = r;
     if (r.kind === 'curve') set('sst', `curve ${job.curves.length} · ${r.n} pts`);
   }
@@ -337,13 +402,45 @@ function tick() {
       ? requestAnimationFrame(tick) : setTimeout(tick, 16);
 }
 
-function start() {
+async function start() {
   if (!page) return;
-  job = newJob(page);
-  needle = null;
-  set('sst', 'tracing'); $('go').textContent = '❚❚ Pause';
+  $('go').textContent = '❚❚ Pause';
   $('msg').style.display = 'none';
+  needle = null;
+  if (await probePipe()) {
+    set('sst', 'running pipeline');
+    $('msg').style.display = ''; $('msg').textContent =
+      'berlman.py: four strategies, scoring against the ink… (20–60 s)';
+    try {
+      const res = await runPipeline();
+      job = adoptPipeline(res);
+      $('hint').textContent =
+        `berlman.py · strategy ${job.strategy} · F1 ${job.f1} · ${job.queue.length} curves`;
+      $('msg').style.display = 'none';
+      set('sst', 'drawing'); redraw(); tick(); return;
+    } catch (e) {
+      $('msg').style.display = 'none';
+      $('hint').textContent = 'pipeline failed — built-in tracer: ' + e.message;
+    }
+  }
+  job = newJob(page);
+  set('sst', 'tracing');
   tick();
+}
+
+/* the page in hand, sent to the digitizer that produced the dataset */
+async function runPipeline() {
+  if (page.file) {
+    const fd = new FormData(); fd.append('file', page.file);
+    const r = await fetch(PIPE + '/api/digitize', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error('digitize ' + r.status);
+    return r.json();
+  }
+  const r = await fetch(PIPE + '/api/digitize_page', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ gid: page.gid }) });
+  if (!r.ok) throw new Error('digitize_page ' + r.status);
+  return r.json();
 }
 function stop() {
   cancelAnimationFrame(raf); clearTimeout(raf); raf = 0;
@@ -370,6 +467,7 @@ $('file').onchange = e => {
   im.onload = () => {
     stop(); job = null; needle = null;
     page = analyse(im);
+    page.file = f;
     const nm = prompt('Wavelength in nm at the left and right edges of the plot box, '
                     + 'comma separated', '250, 400');
     const parts = (nm || '').split(',').map(v => parseFloat(v.trim()));
@@ -400,6 +498,7 @@ async function loadPage(gid) {
     i.src = 'scans/' + gid + '.webp';
   });
   page = analyse(img);
+  page.gid = gid;
   const f = frames[gid];
   if (f) {
     const ps = f.w / page.W;                       // trust the frozen frame

@@ -19,7 +19,9 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 API = os.path.join(ROOT, "api")
-OUT = os.path.join(ROOT, ".vercel", "output", "functions", "api")
+FUNCS = os.path.join(ROOT, ".vercel", "output", "functions")
+OUT = os.path.join(FUNCS, "api")
+GATE = os.path.join(ROOT, "gate", "middleware.js")
 RUNTIME = "nodejs22.x"
 
 VC_CONFIG = {
@@ -65,6 +67,25 @@ def ensure_deps(pkgs):
     return os.path.join(cache, "node_modules")
 
 
+def build_gate():
+    """Emit the passcode gate as an edge middleware function.
+
+    The whole functions/ tree is rebuilt from scratch above, so anything placed
+    in the output by hand is deleted on the next build.  The gate is the one
+    thing that must never silently go missing -- without it the deployment is
+    open -- so it is generated here from a tracked source file like everything
+    else."""
+    if not os.path.exists(GATE):
+        sys.exit(f"missing {GATE} -- refusing to build an ungated deployment")
+    d = os.path.join(FUNCS, "_middleware.func")
+    os.makedirs(d, exist_ok=True)
+    shutil.copy(GATE, os.path.join(d, "index.js"))
+    with open(os.path.join(d, ".vc-config.json"), "w") as f:
+        json.dump({"runtime": "edge", "entrypoint": "index.js",
+                   "envVarsInUse": ["SITE_PASSCODE"]}, f, indent=2)
+    print("  gate      -> _middleware.func  (edge)")
+
+
 def main():
     routes = sorted(n[:-3] for n in os.listdir(API)
                     if n.endswith(".js") and not n.startswith("_"))
@@ -74,8 +95,8 @@ def main():
     node_modules = ensure_deps(pkgs)
     print(f"  external packages required: {', '.join(pkgs) if pkgs else 'none'}")
 
-    shutil.rmtree(os.path.join(ROOT, ".vercel", "output", "functions"),
-                  ignore_errors=True)
+    shutil.rmtree(FUNCS, ignore_errors=True)
+    build_gate()
     for name in routes:
         d = os.path.join(OUT, name + ".func")
         os.makedirs(d, exist_ok=True)

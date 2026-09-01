@@ -38,6 +38,8 @@ const HIST_MAX = 80;
 let history = [];      // [{label, detail, curves:[{px,py}], activeIdx, t}]
 let histAt = -1;       // index of the state currently on screen
 let isErasing = false, eraseBatch = null, lastErase = null, lastMouse = null;
+let eraseTarget = -1;         // curve the current stroke locked onto at first contact
+let hoverTint = -1;           // curve under the idle brush, for the ring colour only
 let isPanning = false, panSX = 0, panSY = 0;
 
 const canvas = document.getElementById('ed');
@@ -125,10 +127,15 @@ async function loadPage() {
 
 /** A published/edited curve (nm, intensity) as page pixels. */
 function toPixels(src) {
+  // Published intensities are scaled so the curve's own maximum reads 1.000.
+  // That scaling has to be undone before converting back to pixel rows, or the
+  // apex lands on the frame's upper rule rather than on the ink it was traced
+  // from -- the dots-above-peak fault, reintroduced on every reload.
+  const undo = src.scaled_by ? 1 / src.scaled_by : 1;
   const px = [], py = [];
   for (let i = 0; i < src.wl.length; i++) {
     px.push((1e7 / src.wl[i] - xcal.b) / xcal.a);
-    py.push(frame.y_bottom - src.inten[i] * (frame.y_bottom - frame.y_top));
+    py.push(frame.y_bottom - src.inten[i] * undo * (frame.y_bottom - frame.y_top));
   }
   return { px, py };
 }
@@ -178,13 +185,24 @@ function physical(c) {
   const wl = [...sum.keys()].sort((a, b) => a - b);
   const inten = wl.map(b => (b === peakBin ? peakV : sum.get(b) / cnt.get(b)));
 
-  // bridge print breaks up to 5 nm so the exported curve is continuous
+  // Bridge print breaks up to 5 nm so the exported curve is continuous.
+  //
+  // A break in the printed ink and a span somebody deliberately erased look
+  // identical here: both are just a gap between two dots.  Interpolating across
+  // the second one puts the erased points straight back, which is what made a
+  // saved edit come back with its gap filled in.  Erasing records the span it
+  // cleared, and those spans are never bridged.
+  const holes = c.holes || [];
+  const cleared = w => {
+    for (const h of holes) if (w >= h[0] && w <= h[1]) return true;
+    return false;
+  };
   const ow = [], oi = [];
   for (let i = 0; i < wl.length; i++) {
     ow.push(wl[i]); oi.push(inten[i]);
     if (i + 1 < wl.length) {
       const gap = wl[i + 1] - wl[i];
-      if (gap > 0.15 && gap <= 5.0) {
+      if (gap > 0.15 && gap <= 5.0 && !cleared((wl[i] + wl[i + 1]) / 2)) {
         const n = Math.round(gap / 0.1) - 1;
         for (let k = 1; k <= n; k++) {
           const t = k / (n + 1);
@@ -527,6 +545,106 @@ function fit() {
   draw();
 }
 
+
+/**
+ * Show the four points the digitization is anchored on.
+ *
+ * Everything published for a plate is derived from these four and nothing
+ * else, so they are worth being able to see.  A manual digitizer has an
+ * operator click them; here they are the four edges of the detected plot box,
+ * and the values at them come from two different places.  The two on the
+ * abscissa are read: the fitted wavenumber line, built from the printed tick
+ * labels, evaluated at the left and right edges.  The two on the ordinate are
+ * assumed: Berlman prints normalised, so the lower rule is 0 and the upper is
+ * 1, and nothing measures that.  The labels below say which is which, because
+ * a measured value and an assumed one should not look alike.
+ */
+function drawCalibration() {
+  if (!frame || !xcal) return;
+  const L = frame.x_left / pageScale, R = frame.x_right / pageScale;
+  const T = frame.y_top / pageScale,  B = frame.y_bottom / pageScale;
+  const wn = x => xcal.a * (x * pageScale) + xcal.b;
+
+  // Canvas units per screen pixel.  Text and markers are sized in these so the
+  // annotation stays the same size on screen at any zoom; without it the font
+  // is scaled by 1/zoom and a zoomed-out page renders labels hundreds of units
+  // tall, piled on top of one another.
+  const u = 1 / zoom;
+
+  ctx.save();
+  ctx.lineWidth = 1.2 * u;
+  ctx.strokeStyle = 'rgba(90,120,190,0.85)';
+  ctx.setLineDash([6 * u, 4 * u]);
+  ctx.strokeRect(L, T, R - L, B - T);
+  ctx.setLineDash([]);
+
+  const rr = 6 * u;
+  const anchors = [[L, B, '#2f6fd0'], [R, B, '#2f6fd0'], [L, T, '#c0392b'], [R, T, '#7a7f88']];
+  for (const [x, y, col] of anchors) {
+    ctx.beginPath(); ctx.arc(x, y, rr, 0, 6.2832);
+    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.lineWidth = 2 * u; ctx.strokeStyle = col; ctx.stroke();
+  }
+
+  const fs = 12 * u;   // constant on screen at any zoom
+  ctx.font = `${fs}px ui-monospace, Menlo, monospace`;
+  ctx.textBaseline = 'middle';
+  const X1=Math.round(frame.x_left), X2=Math.round(frame.x_right);
+  const YB=Math.round(frame.y_bottom), YT=Math.round(frame.y_top);
+  // Terse by design.  This sits on top of the plate, so every extra word costs
+  // a piece of the thing being inspected; anything derivable is left out.
+  const rows = [
+    [L, B,  1, `X1 ${X1} \u2192 ${wn(L).toFixed(0)}`, '#2f6fd0'],
+    [R, B,  1, `X2 ${X2} \u2192 ${wn(R).toFixed(0)} cm-1`, '#2f6fd0'],
+    [L, B,  2, `Y1 ${YB} \u2192 0`, '#c0392b'],
+    [L, T, -1, `Y2 ${YT} \u2192 1  assumed`, '#c0392b'],
+    [L, T, -2, `\u03bd = ${xcal.a.toFixed(4)}x + ${xcal.b.toFixed(1)}   rmse ${xcal.rmse != null ? xcal.rmse : '-'}`, '#2f6fd0'],
+  ];
+
+  // Unity line, one per curve, sitting on that curve's highest surviving dot.
+  // That dot is what 1.000 now means, so erasing the apex drops the line to
+  // the next largest point on the same frame the dots vanish.  Reading the
+  // level off the printed ink instead left it pinned to the top of the spike
+  // long after the dots under it were gone.
+  curves.forEach(c => {
+    if (!c.py.length) return;
+    let mi = 0;
+    for (let i = 1; i < c.py.length; i++) if (c.py[i] < c.py[mi]) mi = i;
+    const [ax, ay] = toScan(c.px[mi], c.py[mi]);
+    ctx.save();
+    ctx.strokeStyle = c.color;
+    ctx.lineWidth = 1.2 * u;
+    ctx.globalAlpha = 0.7;
+    ctx.setLineDash([7 * u, 5 * u]);
+    ctx.beginPath(); ctx.moveTo(L, ay); ctx.lineTo(R, ay); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.beginPath(); ctx.arc(ax, ay, rr * 0.8, 0, 6.2832);
+    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.lineWidth = 1.6 * u; ctx.stroke();
+    ctx.restore();
+  });
+  curves.forEach((c, i) => {
+    const p = derived[c.key];
+    if (!p || !p.wl.length) return;
+    let mx = 0; for (const v of p.inten) if (v > mx) mx = v;
+    rows.push([L, B, 4 + i,
+      `${c.name}  peak ${p.peakNm ? p.peakNm.toFixed(1) : '-'} nm  max ${mx.toFixed(3)}  n=${p.wl.length}`,
+      c.color]);
+  });
+
+  for (const [x, y, slot, text, col] of rows) {
+    const w = ctx.measureText(text).width;
+    const tx = (x === R) ? x - w - rr * 2 : x + rr * 2;
+    const ty = y + slot * fs * 1.35;
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.fillRect(tx - 3 * u, ty - fs * 0.72, w + 6 * u, fs * 1.44);
+    ctx.fillStyle = col;
+    ctx.fillText(text, tx, ty);
+  }
+  ctx.restore();
+}
+
 function draw() {
   if (!ctx) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -539,9 +657,11 @@ function draw() {
   ctx.scale(zoom, zoom);
   ctx.drawImage(img, 0, 0);
 
+  drawCalibration();
+
   const r = Math.max(1.6, 2.4 / zoom);
   curves.forEach((c, ci) => {
-    ctx.globalAlpha = (ci === activeIdx || mode === 'pan') ? 1 : 0.3;
+    ctx.globalAlpha = (ci === activeIdx || ci === eraseTarget || mode === 'pan') ? 1 : 0.3;
     ctx.fillStyle = c.color;
     for (let i = 0; i < c.px.length; i++) {
       const [sx, sy] = toScan(c.px[i], c.py[i]);
@@ -576,7 +696,20 @@ function draw() {
   if (mode === 'erase' && lastMouse) {
     // the ring wears the colour it will actually take, so the scope is
     // obvious before the drag starts
-    const act = curves[activeIdx];
+    // the ring previews its target: hover the green trace and it turns green,
+    // which is the same curve the stroke will lock onto
+    let ai = activeIdx;
+    if (eraseScope === 'active' && frame) {
+      const [hx, hy] = screenToOriginal(lastMouse[0], lastMouse[1]);
+      const hit = eraseTarget >= 0 ? eraseTarget
+                : curveUnder(hx, hy, hx, hy, (ERASE_R / zoom) * pageScale);
+      if (hit >= 0) ai = hit;
+      // keep the status line from contradicting the ring
+      const sc = document.getElementById('sbScope');
+      if (sc && curves[ai]) sc.textContent = curves[ai].name + ' only';
+      hoverTint = hit;
+    }
+    const act = curves[ai];
     const tint = (eraseScope === 'active' && act) ? act.color : '#e74c3c';
     ctx.beginPath();
     ctx.arc(lastMouse[0], lastMouse[1], ERASE_R, 0, 6.2832);
@@ -609,6 +742,21 @@ function setMode(m) {
   draw();
 }
 
+// Which spectrum the brush takes from is decided by what is under it, not by
+// which swatch happens to be selected.  Brushing the green trace has to erase
+// green even while red is the active colour, or the tool looks broken for
+// every curve but the first.
+function curveUnder(ax, ay, bx, by, r) {
+  let best = -1, bd = r;
+  curves.forEach((c, ci) => {
+    for (let i = 0; i < c.px.length; i++) {
+      const d = distToSeg(c.px[i], c.py[i], ax, ay, bx, by);
+      if (d <= bd) { bd = d; best = ci; }
+    }
+  });
+  return best;
+}
+
 function distToSeg(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
   if (l2 === 0) return Math.hypot(px - ax, py - ay);
@@ -617,18 +765,86 @@ function distToSeg(px, py, ax, ay, bx, by) {
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
+
+/**
+ * Scale a curve so its own maximum sits at exactly 1.00, by moving the dots.
+ *
+ * Berlman prints normalised spectra, so unit peak is the intended scale.  When
+ * a contributor erases the top of a curve, the remaining trace has a lower
+ * maximum and the published figure would otherwise report that lower value as
+ * if the plate had drawn it -- the curve "falls behind".  Rescaling here keeps
+ * the stated scale true to what is now being measured.
+ *
+ * The dots move, not just the numbers: that is the invariant the whole editor
+ * rests on, and it is what a rescale applied inside the redraw got wrong.
+ * Idempotent -- a curve already at 1.00 is untouched, so repeated erases
+ * cannot compound.
+ */
+function renormaliseToUnit(c) {
+  if (!c || !c.py.length) return 0;
+  const top = frame.y_top, bot = frame.y_bottom, h = bot - top;
+  let mx = -Infinity;
+  for (let i = 0; i < c.py.length; i++) {
+    const v = (bot - c.py[i]) / h;
+    if (v > mx) mx = v;
+  }
+  if (!(mx > 0.05) || Math.abs(mx - 1) < 5e-4) return 0;
+  for (let i = 0; i < c.py.length; i++) {
+    const v = (bot - c.py[i]) / h;
+    c.py[i] = bot - (v / mx) * h;
+  }
+  return mx;
+}
+
+/* Remember, in nanometres, that this abscissa was cleared on purpose.
+ *
+ * Kept in nm rather than pixels so it survives a save and a reload the same way
+ * the curve does.  Overlapping spans are merged so a long sweep leaves one
+ * entry instead of hundreds.  Nothing needs to remove these: a span with dots
+ * back in it has no gap left to bridge, so the record is simply inert.
+ */
+function noteHole(c, opx) {
+  if (!xcal) return;
+  const wn = xcal.a * opx + xcal.b;
+  if (wn <= 0) return;
+  const w = 1e7 / wn;
+  const pad = 0.05;                       // half a 0.1 nm export bin
+  if (!c.holes) c.holes = [];
+  c.holes.push([w - pad, w + pad]);
+  // Coalesce, so one sweep of the brush leaves one span rather than one per
+  // dot.  The list stays a handful of entries however long the session runs.
+  c.holes.sort((a, b) => a[0] - b[0]);
+  const merged = [c.holes[0]];
+  for (let i = 1; i < c.holes.length; i++) {
+    const last = merged[merged.length - 1], h = c.holes[i];
+    if (h[0] <= last[1] + 0.2) last[1] = Math.max(last[1], h[1]);
+    else merged.push(h);
+  }
+  c.holes = merged.slice(-400);
+}
+
 function eraseStroke(ox, oy) {
   // capsule sweep in ORIGINAL page px, so a fast swipe leaves no survivors
   const r = (ERASE_R / zoom) * pageScale;
   const [ax, ay] = lastErase || [ox, oy];
+  // First contact picks the curve and the rest of the stroke keeps it, so a
+  // sweep through a crossing cannot start eating the other spectrum halfway.
+  if (eraseScope === 'active' && eraseTarget < 0) {
+    // The stroke follows the brush, but the selected colour is the user's and
+    // the eraser does not get to change it.
+    const hit = curveUnder(ax, ay, ox, oy, r);
+    if (hit >= 0) eraseTarget = hit;
+  }
+  const only = eraseScope === 'active' ? (eraseTarget >= 0 ? eraseTarget : activeIdx) : -1;
   let n = 0;
   curves.forEach((c, ci) => {
     // colour-scoped by default: where the curves cross, the brush must not
     // take the other spectrum's dots with it
-    if (eraseScope === 'active' && ci !== activeIdx) return;
+    if (only >= 0 && ci !== only) return;
     for (let i = c.px.length - 1; i >= 0; i--) {
       if (distToSeg(c.px[i], c.py[i], ax, ay, ox, oy) <= r) {
         eraseBatch.pts.push([ci, c.px[i], c.py[i]]);
+        noteHole(c, c.px[i]);
         c.px.splice(i, 1); c.py.splice(i, 1); n++;
       }
     }
@@ -645,7 +861,8 @@ function snapshot(label, detail) {
   if (histAt < history.length - 1) history = history.slice(0, histAt + 1);
   history.push({
     label, detail: detail || '',
-    curves: curves.map(c => ({ px: c.px.slice(), py: c.py.slice() })),
+    curves: curves.map(c => ({ px: c.px.slice(), py: c.py.slice(),
+                               holes: (c.holes || []).map(h => h.slice()) })),
     activeIdx, t: Date.now(),
   });
   if (history.length > HIST_MAX) history.shift();
@@ -660,6 +877,7 @@ function restore(i) {
     if (!curves[ci]) return;
     curves[ci].px = s.px.slice();
     curves[ci].py = s.py.slice();
+    curves[ci].holes = (s.holes || []).map(h => h.slice());
   });
   histAt = i;
   activeIdx = Math.min(h.activeIdx, curves.length - 1);
@@ -768,16 +986,8 @@ function renderPanel() {
     snap.title = 'Scale this curve so its peak sits at exactly 1.00';
     snap.style.marginLeft = 'auto';
     snap.onclick = () => {
-      const p = derived[c.key];
-      if (!p || !p.wl.length) return;
-      const mx = Math.max(...p.inten);
-      if (!(mx > 0) || Math.abs(mx - 1) < 1e-9) { toast('Already at 1.00'); return; }
-      // move the dots themselves, so the canvas and the export agree
-      const top = frame.y_top, bot = frame.y_bottom;
-      for (let i = 0; i < c.py.length; i++) {
-        const v = (bot - c.py[i]) / (bot - top);
-        c.py[i] = bot - (v / mx) * (bot - top);
-      }
+      const mx = renormaliseToUnit(c);
+      if (!mx) { toast('Already at 1.00'); return; }
       snapshot('Peak → 1.00', c.name);
       refresh(); draw();
       toast(`${c.name}: peak ${mx.toFixed(4)} → 1.00`);
@@ -882,7 +1092,27 @@ function addCurve(color) {
  */
 function refresh() {
   derived = {};
-  for (const c of curves) derived[c.key] = physical(c);
+  for (const c of curves) {
+    const p = physical(c);
+    // Unity is the largest point this curve currently has.  Erase the apex and
+    // the scale drops to the next largest, which is what makes the figure keep
+    // reading full scale without any dot being moved.  The factor is carried on
+    // the record so the reconstruction can undo it and land back on the ink.
+    let mi = -1;
+    for (let i = 0; i < p.inten.length; i++) if (mi < 0 || p.inten[i] > p.inten[mi]) mi = i;
+    const mx = mi >= 0 ? p.inten[mi] : 0;
+    if (mx > 0.05 && Math.abs(mx - 1) > 5e-4) {
+      p.inten = p.inten.map(v => Math.round((v / mx) * 1e6) / 1e6);
+      p.scaled_by = Math.round((1 / mx) * 1e6) / 1e6;
+    } else {
+      // Recorded even when it is 1: its presence is what tells a reload that
+      // the record came back exactly as saved and needs no refitting.
+      p.scaled_by = 1;
+    }
+    if (mi >= 0) { p.peakRaw = mx; p.peakNm = p.wl[mi]; }
+    if (c.holes && c.holes.length) p.holes = c.holes;
+    derived[c.key] = p;
+  }
   renderPanel();
   renderSwatches();
   renderPcc();
@@ -893,6 +1123,34 @@ function refresh() {
  * spectrum you add appears here as its own figure rather than being folded
  * silently into the existing ones.
  */
+/* The published viewer's own smoothing, reproduced exactly.
+ *
+ * Two binomial [1 4 6 4 1]/16 passes, then the whole curve scaled so the
+ * smoothed maximum equals the raw maximum.  This used to be a 3-tap kernel
+ * with only the apex sample pinned back to its raw value, which is a different
+ * curve and a different peak: the figure here and the figure on the site were
+ * drawn from the same numbers and did not match.  Short curves are returned
+ * untouched, as the viewer returns them.
+ */
+function smoothVals(v) {
+  if (v.length < 12) return v;
+  let cur = v;
+  for (let pass = 0; pass < 2; pass++) {
+    const out = cur.slice();
+    for (let i = 2; i < cur.length - 2; i++) {
+      out[i] = (cur[i - 2] + 4 * cur[i - 1] + 6 * cur[i] + 4 * cur[i + 1] + cur[i + 2]) / 16;
+    }
+    cur = out;
+  }
+  let rawMax = -Infinity, smMax = -Infinity;
+  for (let i = 0; i < v.length; i++) { if (v[i] > rawMax) rawMax = v[i]; if (cur[i] > smMax) smMax = cur[i]; }
+  if (rawMax > 0 && smMax > 0) {
+    const k = rawMax / smMax;
+    cur = cur.map(x => x * k);
+  }
+  return cur;
+}
+
 function pccFigure(cv, wl, inten, color, title) {
   const w = cv.width = Math.max(2, cv.clientWidth) * 2;
   const h = cv.height = Math.max(2, cv.clientHeight) * 2;
@@ -940,16 +1198,7 @@ function pccFigure(cv, wl, inten, color, title) {
   g.fillText('Normalized intensity', 0, 0);
   g.restore();
 
-  // smoothed trace — two light binomial passes with the peak pinned, the same
-  // treatment the published viewer uses
-  const sm = inten.slice();
-  for (let pass = 0; pass < 2; pass++) {
-    const prev = sm.slice();
-    for (let i = 1; i < sm.length - 1; i++)
-      sm[i] = 0.25 * prev[i - 1] + 0.5 * prev[i] + 0.25 * prev[i + 1];
-  }
-  const pk = inten.indexOf(Math.max(...inten));
-  if (pk >= 0) sm[pk] = inten[pk];
+  const sm = smoothVals(inten);
 
   g.strokeStyle = color; g.lineWidth = 3.2;
   g.beginPath();
@@ -1150,7 +1399,7 @@ canvas.addEventListener('mousedown', e => {
   } else if (mode === 'auto') {
     addWaypoint(ox, oy);
   } else if (mode === 'erase') {
-    isErasing = true; eraseBatch = { t: 'erase', pts: [] }; lastErase = null;
+    isErasing = true; eraseBatch = { t: 'erase', pts: [] }; lastErase = null; eraseTarget = -1;
     eraseStroke(ox, oy);
   }
 });
@@ -1175,11 +1424,20 @@ window.addEventListener('mouseup', () => {
   if (isErasing) {
     isErasing = false; lastErase = null;
     if (eraseBatch && eraseBatch.pts.length) {
-      const c = curves[activeIdx];
+      const c = curves[eraseTarget >= 0 ? eraseTarget : activeIdx];
+      // Erasing the apex lowers the curve's maximum, and the ordinate scale
+      // follows it down to the next largest point.  The dots do not move:
+      // they sit on the printed ink and erasing a neighbour is no reason to
+      // lift them off it.  What changes is what 1.000 refers to, which
+      // refresh() recomputes from whatever remains.
       snapshot('Erase', `${eraseScope === 'all' ? 'all curves' : (c ? c.name : '')} · -${eraseBatch.pts.length}`);
-      toast(`Erased ${eraseBatch.pts.length} dots`);
+      refresh(); draw();
+      const after = c && derived[c.key] ? derived[c.key] : null;
+      toast(after && after.peakRaw
+        ? `Erased ${eraseBatch.pts.length} dots · scale now 1.000 at ${after.peakNm.toFixed(1)} nm`
+        : `Erased ${eraseBatch.pts.length} dots`);
     }
-    eraseBatch = null;
+    eraseBatch = null; eraseTarget = -1;
   }
   if (isPanning) { isPanning = false; wrap.style.cursor = mode === 'pan' ? 'grab' : 'crosshair'; }
 });
@@ -1321,20 +1579,27 @@ async function loadCommunityEdit() {
       let c = curves.find(x => x.key === k);
       if (!c) { c = { ...ROLE[k], px: [], py: [] }; curves.push(c); }
       Object.assign(c, toPixels(src));
+      c.holes = Array.isArray(src.holes) ? src.holes.map(h => h.slice()) : [];
     }
     // curves a contributor drew themselves come back with their own colours
     curves = curves.filter(c => !c.custom);
     (doc.extra || []).forEach((src, i) => {
       newCurveSeq = Math.max(newCurveSeq, i + 1);
       curves.push({ key: 'x' + (i + 1), name: src.name || `curve ${i + 1}`,
-                    color: src.color || '#3B82F6', custom: true, ...toPixels(src) });
+                    color: src.color || '#3B82F6', custom: true, ...toPixels(src),
+                    holes: Array.isArray(src.holes) ? src.holes.map(h => h.slice()) : [] });
     });
     activeIdx = Math.min(activeIdx, curves.length - 1);
+    // A record saved with its scale factor reconstructs onto the ink exactly,
+    // so refitting it can only move dots away from what the contributor saved.
+    // Records from before the factor was stored do need the fit.
+    const exact = ['em', 'ab', 'em2'].every(k => !doc[k] || doc[k].scaled_by != null) &&
+                  (doc.extra || []).every(c => c.scaled_by != null);
     let snapped = 0;
-    for (const c of curves) snapped += snapToInk(c).moved;
+    if (!exact) for (const c of curves) snapped += snapToInk(c).moved;
     renderSwatches(); refresh(); draw();
     snapshot('Loaded edit', (doc.author || 'anonymous') +
-             (snapped ? ` · ${snapped} fitted` : ''));
+             (exact ? ' · exact' : snapped ? ` · ${snapped} refitted` : ''));
     if (msg) {
       msg.className = 'svmsg';
       msg.textContent = `Showing the current edit by ${doc.author || 'anonymous'}` +
