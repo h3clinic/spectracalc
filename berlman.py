@@ -122,6 +122,28 @@ def _ocr_numbers(gray, x0, y0, x1, y1, psms=(6, 11), scale=3):
     return best
 
 
+def _ocr_axis_band(gray, xl, xr, y0, y1):
+    """OCR an axis-label strip at two horizontal margins and union the tokens.
+
+    Labels at the box edges are centred on xl/xr and extend ~70 px past them
+    at 600 dpi, so a narrow margin slices the outer digit off and OCR reads
+    15000 as 5000.  A wide margin fixes that, but Tesseract's layout analysis
+    is not monotonic in crop size: on some plates the wider crop drops labels
+    the narrow one read cleanly (graph-288 goes 7 -> 0 tokens).  Running both
+    and taking the union never loses a token, and captures both edge labels
+    on 259 of 308 plates against 71 for the narrow margin alone.
+    """
+    toks = []
+    for m in (_s(25), _s(50)):
+        toks += _ocr_numbers(gray, xl - m, y0, xr + m, y1)
+    toks = _split_merged_toks(toks)
+    out = []
+    for t in sorted(toks, key=lambda z: z[1]):
+        if not any(o[0] == t[0] and abs(o[1] - t[1]) <= _s(15) for o in out):
+            out.append(t)
+    return out
+
+
 def _robust_linfit(px, vals):
     """Theil-Sen (median-slope) fit, tolerant of OCR misreads. -> (a,b,rmse,n).
 
@@ -258,8 +280,7 @@ def calibrate_x(gray, frame):
     """
     xl, xr, yb = frame["x_left"], frame["x_right"], frame["y_bottom"]
     h = gray.shape[0]
-    toks = _ocr_numbers(gray, xl - 50, yb + 2, xr + 50, yb + int(0.032 * h))
-    toks = _split_merged_toks(toks)
+    toks = _ocr_axis_band(gray, xl, xr, yb + 2, yb + int(0.032 * h))
     pts = sorted((cx, float(t)) for (t, cx, cy, *_) in toks
                  if len(t) in (4, 5) and "." not in t and 8000 <= float(t) <= 55000)
     if len(pts) < 2:
@@ -301,7 +322,7 @@ def _calibrate_x_from_top(gray, frame):
     xl, xr, yt = frame["x_left"], frame["x_right"], frame["y_top"]
     h = gray.shape[0]
     y0 = max(0, yt - int(0.045 * h))
-    toks = _ocr_numbers(gray, xl - 50, y0, xr + 50, yt - 4)
+    toks = _ocr_axis_band(gray, xl, xr, y0, yt - 4)
     pts = sorted((cx, 1e8 / float(t)) for (t, cx, cy, *_) in toks
                  if len(t) == 4 and "." not in t and 2000 <= float(t) <= 7000)
     if len(pts) < 3:
